@@ -43,7 +43,7 @@ jobs:
 
       - name: Run Pi Code Review
         id: pi_review
-        uses: ./ # 或使用发布后的 owner/repo@v1
+        uses: devcxl/agentic-action@main
         with:
           provider: 'half-cabbage'
           model: 'claude-3-7-sonnet'
@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Analysis
-        uses: ./
+        uses: devcxl/agentic-action@main
         with:
           model: 'openai/gpt-4o'
           tools: 'read,grep,find,ls'
@@ -120,7 +120,7 @@ jobs:
 
       - name: Run Pi Code Review
         id: pi_review
-        uses: ./
+        uses: devcxl/agentic-action@main
         with:
           provider: 'half-cabbage'
           model: 'claude-3-7-sonnet'
@@ -152,7 +152,7 @@ jobs:
 
 ```yaml
 - name: Review with External Prompt Files
-  uses: ./
+  uses: devcxl/agentic-action@main
   with:
     model: 'claude-3-7-sonnet'
     system_prompt: '.github/prompts/security_rules.md' # 直接指定文件路径
@@ -164,7 +164,7 @@ jobs:
 
 ```yaml
 - name: Summarize Changelog
-  uses: ./
+  uses: devcxl/agentic-action@main
   with:
     model: 'google/gemini-2.5-pro'
     no_tools: 'true'
