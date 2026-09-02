@@ -193,7 +193,7 @@ runs:
         PAGES_BASE_URL: ${{ inputs.pages_base_url }}
       run: |
         # 1. 基础运行参数：非交互式、信任本地配置
-        PI_ARGS=("-p" "--approve")
+        PI_ARGS=("-p")
 
         # 2. 会话存储与 HTML 导出支持
         SESSION_DIR="/tmp/pi_session_${{ github.run_id }}"
@@ -254,8 +254,8 @@ runs:
 
         # 8. 执行 Pi
         REPORT_FILE="/tmp/pi_report.md"
-        echo "Executing: pi ${PI_ARGS[*]} -- ${FILES[*]} [prompt]"
-        pi "${PI_ARGS[@]}" -- "${FILES[@]}" "$ACTUAL_PROMPT" > "$REPORT_FILE" 2>&1 || {
+        echo "Executing: pi ${PI_ARGS[*]} ${FILES[*]} [prompt]"
+        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" > "$REPORT_FILE" 2>&1 || {
           EXIT_CODE=$?
           echo "Pi execution exited with code $EXIT_CODE"
           cat "$REPORT_FILE"
