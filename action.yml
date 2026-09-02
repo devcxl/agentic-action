@@ -1,5 +1,5 @@
 name: 'Pi Coding Agent Action'
-description: 'Automated AI workflows and PR code review powered by Pi Coding Agent with full parameterization'
+description: 'Automated AI workflows and code tasks powered by Pi Coding Agent with full parameterization'
 author: 'agentic-action'
 
 inputs:
@@ -43,7 +43,7 @@ inputs:
 
   # --- 工具与权限控制 ---
   tools:
-    description: 'Comma-separated allowlist of tool names (e.g. "read,grep,find,ls,web_search")'
+    description: 'Comma-separated allowlist of tool names. Include bash if the agent may use GitHub CLI.'
     required: false
     default: ''
   exclude_tools:
@@ -59,48 +59,17 @@ inputs:
     required: false
     default: 'false'
 
-  # --- PR 上下文与 Git 配置 ---
-  post_comment:
-    description: 'Post review results as a PR comment if running in a pull_request event (true/false)'
-    required: false
-    default: 'false'
+  # --- GitHub 认证与环境 ---
   github_token:
-    description: 'GitHub token for fetching PR diff and posting comments'
+    description: 'GitHub token exposed as GH_TOKEN in the environment'
     required: false
     default: ${{ github.token }}
-
-  # --- HTML 报告与 GitHub Pages ---
-  export_html:
-    description: 'Export session as an interactive HTML report (true/false)'
-    required: false
-    default: 'true'
-  pages_base_url:
-    description: 'Base URL for GitHub Pages (e.g. https://owner.github.io/repo). Auto-inferred if empty.'
-    required: false
-    default: ''
 
   # --- 输出与格式 ---
   mode:
     description: 'Output mode: text (default) or json'
     required: false
     default: 'text'
-
-outputs:
-  verdict:
-    description: 'Final review verdict (PASS, BLOCKED, or UNKNOWN)'
-    value: ${{ steps.run_pi.outputs.verdict }}
-  report_path:
-    description: 'File path to the generated review Markdown report'
-    value: ${{ steps.run_pi.outputs.report_path }}
-  html_report_path:
-    description: 'File path to the generated interactive HTML report'
-    value: ${{ steps.run_pi.outputs.html_report_path }}
-  html_report_url:
-    description: 'Predicted GitHub Pages URL for the interactive HTML report'
-    value: ${{ steps.run_pi.outputs.html_report_url }}
-  result:
-    description: 'Full text output produced by Pi'
-    value: ${{ steps.run_pi.outputs.result }}
 
 runs:
   using: 'composite'
@@ -109,6 +78,14 @@ runs:
       uses: actions/setup-node@v4
       with:
         node-version: 22
+
+    - name: Cache npm global cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.npm
+        key: pi-npm-cache-${{ runner.os }}-${{ runner.arch }}
+        restore-keys: |
+          pi-npm-cache-${{ runner.os }}-
 
     - name: Install Pi Coding Agent
       shell: bash
@@ -119,77 +96,13 @@ runs:
 
     - name: Setup Pi Configuration and Extensions
       shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         mkdir -p ~/.pi/agent/extensions
-        CONFIG_DIR="${{ github.action_path }}/pi-config"
+        CONFIG_DIR="${ACTION_PATH}/pi-config"
         if [ -d "$CONFIG_DIR" ]; then
           cp -r "$CONFIG_DIR/"* ~/.pi/agent/
-        fi
-        if [ ! -f ~/.pi/agent/settings.json ]; then
-          echo '{"defaultProjectTrust": "always"}' > ~/.pi/agent/settings.json
-        elif ! grep -q "defaultProjectTrust" ~/.pi/agent/settings.json; then
-          node -e '
-            const fs = require("fs");
-            const p = process.env.HOME + "/.pi/agent/settings.json";
-            try {
-              const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
-              cfg.defaultProjectTrust = "always";
-              fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
-            } catch {}
-          '
-        fi
-
-    - name: Prepare PR Diff Context
-      id: prepare_context
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github_token }}
-      run: |
-        DIFF_FILE="/tmp/pr_diff.patch"
-        rm -f "$DIFF_FILE"
-
-        EXCLUDE_PATHSPECS=(
-          ":!package-lock.json"
-          ":!pnpm-lock.yaml"
-          ":!yarn.lock"
-          ":!bun.lockb"
-          ":!Cargo.lock"
-          ":!go.sum"
-          ":!composer.lock"
-          ":!*.min.js"
-          ":!*.min.css"
-          ":!*.map"
-        )
-
-        # 优先使用本地 git diff（排除锁定文件与编译产物）
-        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-          BASE_REF="${{ github.event.pull_request.base.sha }}"
-          if [ -n "$BASE_REF" ] && git cat-file -e "$BASE_REF" 2>/dev/null; then
-            echo "Generating filtered git diff against base SHA: $BASE_REF"
-            git diff "$BASE_REF" HEAD -- . "${EXCLUDE_PATHSPECS[@]}" > "$DIFF_FILE" 2>/dev/null || true
-          elif git rev-parse origin/${{ github.base_ref }} >/dev/null 2>&1; then
-            echo "Generating filtered git diff against origin/${{ github.base_ref }}"
-            git diff "origin/${{ github.base_ref }}" HEAD -- . "${EXCLUDE_PATHSPECS[@]}" > "$DIFF_FILE" 2>/dev/null || true
-          elif git rev-parse HEAD~1 >/dev/null 2>&1; then
-            echo "Generating filtered git diff against HEAD~1"
-            git diff HEAD~1 HEAD -- . "${EXCLUDE_PATHSPECS[@]}" > "$DIFF_FILE" 2>/dev/null || true
-          fi
-        fi
-
-        # 降级方案：若本地无法生成且存在 PR 号，使用 gh pr diff
-        PR_NUMBER="${{ github.event.pull_request.number }}"
-        if [ ! -s "$DIFF_FILE" ] && [ -n "$PR_NUMBER" ] && command -v gh >/dev/null 2>&1; then
-          echo "Fetching diff for PR #${PR_NUMBER} via gh CLI..."
-          gh pr diff "$PR_NUMBER" > "$DIFF_FILE" 2>/dev/null || true
-        fi
-
-        if [ -s "$DIFF_FILE" ]; then
-          echo "has_diff=true" >> "$GITHUB_OUTPUT"
-          echo "diff_file=$DIFF_FILE" >> "$GITHUB_OUTPUT"
-          echo "PR diff successfully generated ($(wc -l < "$DIFF_FILE") lines)."
-        else
-          echo "has_diff=false" >> "$GITHUB_OUTPUT"
-          echo "No PR diff detected or diff is empty."
         fi
 
     - name: Run Pi Agent
@@ -200,34 +113,32 @@ runs:
         INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
         INPUT_APPEND_SYSTEM_PROMPT: ${{ inputs.append_system_prompt }}
         INPUT_API_KEY: ${{ inputs.api_key }}
-        HAS_DIFF: ${{ steps.prepare_context.outputs.has_diff }}
-        DIFF_FILE: ${{ steps.prepare_context.outputs.diff_file }}
-        EXPORT_HTML: ${{ inputs.export_html }}
-        PAGES_BASE_URL: ${{ inputs.pages_base_url }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_THINKING: ${{ inputs.thinking }}
+        INPUT_TOOLS: ${{ inputs.tools }}
+        INPUT_EXCLUDE_TOOLS: ${{ inputs.exclude_tools }}
+        INPUT_NO_BUILTIN_TOOLS: ${{ inputs.no_builtin_tools }}
+        INPUT_NO_TOOLS: ${{ inputs.no_tools }}
+        INPUT_PROMPT_TEMPLATE: ${{ inputs.prompt_template }}
+        INPUT_MODE: ${{ inputs.mode }}
+        INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
+        GH_TOKEN: ${{ inputs.github_token }}
       run: |
         # 1. 基础运行参数：非交互式
         PI_ARGS=("-p")
 
-        # 2. 会话存储与 HTML 导出支持
-        SESSION_DIR="/tmp/pi_session_${{ github.run_id }}"
-        if [ "$EXPORT_HTML" = "true" ]; then
-          mkdir -p "$SESSION_DIR"
-          PI_ARGS+=("--session-dir" "$SESSION_DIR")
-        else
-          PI_ARGS+=("--no-session")
-        fi
-
         # 3. 动态追加 Provider 与 Model
-        [ -n "${{ inputs.provider }}" ] && PI_ARGS+=("--provider" "${{ inputs.provider }}")
-        [ -n "${{ inputs.model }}" ] && PI_ARGS+=("--model" "${{ inputs.model }}")
-        [ -n "${{ inputs.thinking }}" ] && PI_ARGS+=("--thinking" "${{ inputs.thinking }}")
+        [ -n "$INPUT_PROVIDER" ] && PI_ARGS+=("--provider" "$INPUT_PROVIDER")
+        [ -n "$INPUT_MODEL" ] && PI_ARGS+=("--model" "$INPUT_MODEL")
+        [ -n "$INPUT_THINKING" ] && PI_ARGS+=("--thinking" "$INPUT_THINKING")
         [ -n "$INPUT_API_KEY" ] && PI_ARGS+=("--api-key" "$INPUT_API_KEY")
 
         # 4. 动态追加工具白名单与权限
-        [ -n "${{ inputs.tools }}" ] && PI_ARGS+=("--tools" "${{ inputs.tools }}")
-        [ -n "${{ inputs.exclude_tools }}" ] && PI_ARGS+=("--exclude-tools" "${{ inputs.exclude_tools }}")
-        [ "${{ inputs.no_builtin_tools }}" = "true" ] && PI_ARGS+=("--no-builtin-tools")
-        [ "${{ inputs.no_tools }}" = "true" ] && PI_ARGS+=("--no-tools")
+        [ -n "$INPUT_TOOLS" ] && PI_ARGS+=("--tools" "$INPUT_TOOLS")
+        [ -n "$INPUT_EXCLUDE_TOOLS" ] && PI_ARGS+=("--exclude-tools" "$INPUT_EXCLUDE_TOOLS")
+        [ "$INPUT_NO_BUILTIN_TOOLS" = "true" ] && PI_ARGS+=("--no-builtin-tools")
+        [ "$INPUT_NO_TOOLS" = "true" ] && PI_ARGS+=("--no-tools")
 
         # 5. 动态追加系统提示词与输出模式（自动识别内联文本或文件路径）
         ACTUAL_SYSTEM_PROMPT="$INPUT_SYSTEM_PROMPT"
@@ -242,8 +153,8 @@ runs:
         fi
         [ -n "$ACTUAL_APPEND_SYSTEM_PROMPT" ] && PI_ARGS+=("--append-system-prompt" "$ACTUAL_APPEND_SYSTEM_PROMPT")
 
-        [ -n "${{ inputs.prompt_template }}" ] && PI_ARGS+=("--prompt-template" "${{ inputs.prompt_template }}")
-        [ -n "${{ inputs.mode }}" ] && PI_ARGS+=("--mode" "${{ inputs.mode }}")
+        [ -n "$INPUT_PROMPT_TEMPLATE" ] && PI_ARGS+=("--prompt-template" "$INPUT_PROMPT_TEMPLATE")
+        [ -n "$INPUT_MODE" ] && PI_ARGS+=("--mode" "$INPUT_MODE")
 
         # 6. 解析主提示词（自动识别内联文本或文件路径）
         ACTUAL_PROMPT="$INPUT_PROMPT"
@@ -253,103 +164,30 @@ runs:
 
         # 7. 构建文件输入列表
         FILES=()
-        if [ "$HAS_DIFF" = "true" ] && [ -f "$DIFF_FILE" ]; then
-          FILES+=("@$DIFF_FILE")
-        fi
-
-        if [ -n "${{ inputs.context_files }}" ]; then
-          for file in ${{ inputs.context_files }}; do
+        if [ -n "$INPUT_CONTEXT_FILES" ]; then
+          for file in $INPUT_CONTEXT_FILES; do
             if [ -f "$file" ]; then
               FILES+=("@$file")
             fi
           done
         fi
 
-        # 8. 执行 Pi
-        REPORT_FILE="/tmp/pi_report.md"
+        # 8. 执行 Pi：stdout 写入 Step Summary，stderr 终端输出
+        RESULT_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/pi-result.XXXXXX")
         echo "Executing: pi ${PI_ARGS[*]} ${FILES[*]} [prompt]"
         set +e
-        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" 2>&1 | tee "$REPORT_FILE"
+        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" | tee "$RESULT_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
         set -e
         if [ "$EXIT_CODE" -ne 0 ]; then
           echo "Pi execution exited with code $EXIT_CODE"
-          exit $EXIT_CODE
+          rm -f "$RESULT_FILE"
+          exit "$EXIT_CODE"
         fi
 
-        # 8. 导出交互式 HTML 报告
-        HTML_REPORT_PATH=""
-        HTML_REPORT_URL=""
-        if [ "$EXPORT_HTML" = "true" ]; then
-          SESSION_FILE=$(find "$SESSION_DIR" -type f -name "*.jsonl" | head -n 1)
-          if [ -n "$SESSION_FILE" ] && [ -f "$SESSION_FILE" ]; then
-            HTML_REPORT_PATH="/tmp/pi_report.html"
-            echo "Exporting session $SESSION_FILE to $HTML_REPORT_PATH..."
-            pi --export "$SESSION_FILE" "$HTML_REPORT_PATH" || echo "Failed to export session to HTML"
-
-            # 计算 GitHub Pages 访问链接
-            BASE_URL="$PAGES_BASE_URL"
-            if [ -z "$BASE_URL" ]; then
-              REPO_OWNER="${{ github.repository_owner }}"
-              REPO_NAME="${{ github.event.repository.name }}"
-              if [ -z "$REPO_NAME" ]; then
-                REPO_NAME="${GITHUB_REPOSITORY#*/}"
-              fi
-              BASE_URL="https://${REPO_OWNER}.github.io/${REPO_NAME}"
-            fi
-            BASE_URL="${BASE_URL%/}"
-            HTML_REPORT_URL="${BASE_URL}/reports/run-${{ github.run_id }}/index.html"
-
-            # 追加在线预览链接到 Markdown 报告末尾
-            {
-              echo ""
-              echo "---"
-              echo "**Interactive Report:** [Click to view interactive HTML session](${HTML_REPORT_URL})"
-            } >> "$REPORT_FILE"
-          fi
-        fi
-
-        # 9. 解析审查结果结论（PASS / BLOCKED）
-        VERDICT="UNKNOWN"
-        if grep -q "VERDICT: PASS" "$REPORT_FILE"; then
-          VERDICT="PASS"
-        elif grep -q "VERDICT: BLOCKED" "$REPORT_FILE"; then
-          VERDICT="BLOCKED"
-        fi
-
-        # 10. 设置 Outputs
-        echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
-        echo "report_path=$REPORT_FILE" >> "$GITHUB_OUTPUT"
-        echo "html_report_path=$HTML_REPORT_PATH" >> "$GITHUB_OUTPUT"
-        echo "html_report_url=$HTML_REPORT_URL" >> "$GITHUB_OUTPUT"
-
-        # 处理 multiline output 供 result 变量使用
-        {
-          echo "result<<EOF"
-          cat "$REPORT_FILE"
-          echo "EOF"
-        } >> "$GITHUB_OUTPUT"
-
-        # 11. 写入 GitHub Step Summary
-        echo "## Pi Agent Execution Report" >> "$GITHUB_STEP_SUMMARY"
-        echo "**Verdict:** \`$VERDICT\`" >> "$GITHUB_STEP_SUMMARY"
-        if [ -n "$HTML_REPORT_URL" ]; then
-          echo "**Interactive Report:** [View Online Preview](${HTML_REPORT_URL})" >> "$GITHUB_STEP_SUMMARY"
-        fi
+        # 9. 写入 GitHub Step Summary
+        echo "## Pi Agent Output" >> "$GITHUB_STEP_SUMMARY"
         echo "" >> "$GITHUB_STEP_SUMMARY"
-        cat "$REPORT_FILE" >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Post PR Comment
-      if: inputs.post_comment == 'true' && github.event.pull_request.number != ''
-      shell: bash
-      env:
-        GH_TOKEN: ${{ inputs.github_token }}
-        REPORT_PATH: ${{ steps.run_pi.outputs.report_path }}
-        PR_NUMBER: ${{ github.event.pull_request.number }}
-      run: |
-        if [ -f "$REPORT_PATH" ] && command -v gh >/dev/null 2>&1; then
-          echo "Posting comment to PR #${PR_NUMBER}..."
-          gh pr comment "$PR_NUMBER" --body-file "$REPORT_PATH" || echo "Failed to post PR comment"
-        fi
-
+        cat "$RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
+        rm -f "$RESULT_FILE"
     
