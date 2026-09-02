@@ -27,7 +27,7 @@ interface CacheEntry {
   catalog: Record<string, ModelsDevModel>;
 }
 
-const log = (message: string) => console.info(`[half-cabbage] ${message}`);
+const log = (message: string) => console.error(`[half-cabbage] ${message}`);
 
 function normalizeBaseUrl(url: string): string {
   const trimmed = url.replace(/\/+$/, "");
