@@ -108,13 +108,13 @@ runs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: 20
+        node-version: 22
 
     - name: Install Pi Coding Agent
       shell: bash
       run: |
         if ! command -v pi >/dev/null 2>&1; then
-          npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+          npm install -g --ignore-scripts @earendil-works/pi-coding-agent@latest
         fi
 
     - name: Setup Pi Configuration and Extensions
@@ -124,6 +124,19 @@ runs:
         CONFIG_DIR="${{ github.action_path }}/pi-config"
         if [ -d "$CONFIG_DIR" ]; then
           cp -r "$CONFIG_DIR/"* ~/.pi/agent/
+        fi
+        if [ ! -f ~/.pi/agent/settings.json ]; then
+          echo '{"defaultProjectTrust": "always"}' > ~/.pi/agent/settings.json
+        elif ! grep -q "defaultProjectTrust" ~/.pi/agent/settings.json; then
+          node -e '
+            const fs = require("fs");
+            const p = process.env.HOME + "/.pi/agent/settings.json";
+            try {
+              const cfg = JSON.parse(fs.readFileSync(p, "utf8"));
+              cfg.defaultProjectTrust = "always";
+              fs.writeFileSync(p, JSON.stringify(cfg, null, 2));
+            } catch {}
+          '
         fi
 
     - name: Prepare PR Diff Context
@@ -192,7 +205,7 @@ runs:
         EXPORT_HTML: ${{ inputs.export_html }}
         PAGES_BASE_URL: ${{ inputs.pages_base_url }}
       run: |
-        # 1. 基础运行参数：非交互式、信任本地配置
+        # 1. 基础运行参数：非交互式
         PI_ARGS=("-p")
 
         # 2. 会话存储与 HTML 导出支持
