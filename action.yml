@@ -268,12 +268,14 @@ runs:
         # 8. 执行 Pi
         REPORT_FILE="/tmp/pi_report.md"
         echo "Executing: pi ${PI_ARGS[*]} ${FILES[*]} [prompt]"
-        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" > "$REPORT_FILE" 2>&1 || {
-          EXIT_CODE=$?
+        set +e
+        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" 2>&1 | tee "$REPORT_FILE"
+        EXIT_CODE=${PIPESTATUS[0]}
+        set -e
+        if [ "$EXIT_CODE" -ne 0 ]; then
           echo "Pi execution exited with code $EXIT_CODE"
-          cat "$REPORT_FILE"
           exit $EXIT_CODE
-        }
+        fi
 
         # 8. 导出交互式 HTML 报告
         HTML_REPORT_PATH=""
