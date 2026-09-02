@@ -155,10 +155,11 @@ async function loadModels(baseUrl: string, apiKey: string) {
 
 export default async function (pi: ExtensionAPI) {
   const baseUrl = process.env.HALF_CABBAGE_BASE_URL;
-  const apiKey = process.env.HALF_CABBAGE_KEY;
+  const apiKey = process.env.HALF_CABBAGE_API_KEY || process.env.HALF_CABBAGE_KEY;
+  const apiKeyEnvName = process.env.HALF_CABBAGE_API_KEY ? "$HALF_CABBAGE_API_KEY" : "$HALF_CABBAGE_KEY";
 
   if (!baseUrl || !apiKey) {
-    log("HALF_CABBAGE_BASE_URL / HALF_CABBAGE_KEY not set, skipping provider registration");
+    log("HALF_CABBAGE_BASE_URL / HALF_CABBAGE_API_KEY not set, skipping provider registration");
     return;
   }
 
@@ -173,7 +174,7 @@ export default async function (pi: ExtensionAPI) {
   pi.registerProvider(PROVIDER_ID, {
     name: "Half Cabbage",
     baseUrl: endpoint,
-    apiKey: "$HALF_CABBAGE_KEY",
+    apiKey: apiKeyEnvName,
     api: "openai-completions",
     models,
   });

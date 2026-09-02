@@ -54,7 +54,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
-          HALF_CABBAGE_KEY: ${{ secrets.HALF_CABBAGE_KEY }}
+          HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
 
       - name: Check Verdict Gate
@@ -132,7 +132,7 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
         env:
           HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
-          HALF_CABBAGE_KEY: ${{ secrets.HALF_CABBAGE_KEY }}
+          HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
           EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
 
       # 将 HTML 报告发布到 gh-pages 分支对应 run 目录
@@ -219,7 +219,7 @@ jobs:
 
 - **Half Cabbage Provider**:
   - `HALF_CABBAGE_BASE_URL`: API 基础地址
-  - `HALF_CABBAGE_KEY`: API 密钥
+  - `HALF_CABBAGE_API_KEY`: API 密钥（同时向前兼容 `HALF_CABBAGE_KEY`）
 - **官方 Providers**:
   - `OPENAI_API_KEY`: OpenAI 密钥
   - `ANTHROPIC_API_KEY`: Anthropic 密钥
