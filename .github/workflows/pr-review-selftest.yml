@@ -1,0 +1,123 @@
+# scripts/pr-review 的自检：在临时仓库中制造改动，验证上下文生成与评论渲染。
+#
+# 这些检查不需要任何 secrets、不调用模型，可安全地在 PR 上运行。
+
+name: PR Review Scripts
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/pr-review/**'
+      - '.github/workflows/pr-review*.yml'
+      - '.github/prompts/pr-review.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build a mock repository with tricky cases
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/selftest && mkdir -p /tmp/selftest && cd /tmp/selftest
+          git init -q
+          git config user.email selftest@example.com
+          git config user.name selftest
+          git checkout -q -b main
+
+          mkdir -p src docs dist
+          node -e "let s='';for(let i=0;i<30;i++)s+='export const a'+i+' = '+i+';\n';require('fs').writeFileSync('src/a.ts',s)"
+          printf 'export const b = 2;\n' > src/b.ts
+          printf '# doc\n' > docs/readme.md
+          printf 'lock\n' > package-lock.json
+          printf 'bundle\n' > dist/bundle.js
+          head -c 200 /dev/urandom > logo.png
+          git add -A && git commit -qm base
+          git rev-parse HEAD > /tmp/selftest-base.sha
+
+          # 1000 行的新文件 + rename（少量内容修改）+ 二进制 + 被排除项
+          node -e "let s='';for(let i=0;i<1000;i++)s+='export const l'+i+' = '+i+';\n';require('fs').writeFileSync('src/big.ts',s)"
+          git mv src/a.ts "src/renamed a.ts"
+          printf 'export const a30 = 30;\n' >> "src/renamed a.ts"
+          printf 'lock-changed\n' >> package-lock.json
+          printf 'bundle-changed\n' >> dist/bundle.js
+          node -e "require('fs').writeFileSync('logo.png', Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]), require('crypto').randomBytes(300), Buffer.from([0x00])]))"
+          git add -A && git commit -qm feature
+
+      - name: Run build-context (default)
+        run: |
+          set -euo pipefail
+          node scripts/pr-review/build-context.mjs \
+            --repo /tmp/selftest \
+            --base "$(cat /tmp/selftest-base.sha)" \
+            --out /tmp/selftest/.review-context \
+            --base-snapshot \
+            --max-chunk-lines 300 \
+            --exclude '**/package-lock.json,**/dist/**' \
+            | tee /tmp/context-summary.json
+          node -e "
+            const fs = require('fs');
+            const m = JSON.parse(fs.readFileSync('/tmp/selftest/.review-context/manifest.json','utf8'));
+            const assert = (ok, msg) => { if (!ok) { console.error('FAIL: ' + msg); process.exit(1); } };
+            assert(m.totals.filesChanged === 5, 'filesChanged 应为 5，实际 ' + m.totals.filesChanged);
+            assert(m.skipped.binary.length === 1, '应识别 1 个二进制文件');
+            assert(m.skipped.excluded.length === 2, '应排除 2 个文件（lock + dist）');
+            assert(m.chunks.length >= 2, '应按 max-chunk-lines 分块');
+            assert(m.files.length === 2, '纳入审查应为 2 个文件');
+            const renamed = m.files.find((f) => f.path === 'src/renamed a.ts');
+            assert(renamed && renamed.oldPath === 'src/a.ts' && renamed.status.startsWith('R'), '应识别 rename');
+            const big = m.files.find((f) => f.path === 'src/big.ts');
+            assert(big && big.patch, '大文件 patch 必须落盘');
+            assert(m.baseSnapshot && m.baseSnapshot.files >= 1, 'base 快照应包含改动前的文件，实际 ' + JSON.stringify(m.baseSnapshot));
+            assert(fs.existsSync('/tmp/selftest/.review-context/base/src/a.ts'), 'base 快照应保留 rename 前的旧路径');
+            console.log('build-context 断言全部通过');
+          "
+
+      - name: Run build-context on shallow clone (must fail fast)
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/shallow && git clone -q --depth 1 file:///tmp/selftest /tmp/shallow
+          if node scripts/pr-review/build-context.mjs --repo /tmp/shallow --base HEAD >/dev/null 2>&1; then
+            echo "FAIL: 浅克隆应当直接报错"; exit 1
+          fi
+          echo "浅克隆检测通过"
+
+      - name: Render comment assertions
+        run: |
+          set -euo pipefail
+          cat > /tmp/report.json <<'JSON'
+          {
+            "summary": "selftest",
+            "verdict": "request_changes",
+            "coverage": { "chunks_reviewed": [1], "chunks_total": 1, "files_reviewed": 1, "files_total": 1 },
+            "findings": [
+              { "file": "src/big.ts", "line": 3, "severity": "critical", "category": "security", "title": "t", "detail": "d", "suggestion": "s" }
+            ]
+          }
+          JSON
+          set +e
+          node scripts/pr-review/render-comment.mjs --report /tmp/report.json --out /tmp/comment.md --fail-on high
+          GATE=$?
+          set -e
+          if [ "$GATE" -ne 1 ]; then echo "FAIL: fail-on high 应返回 1，实际 $GATE"; exit 1; fi
+          grep -q 'pi-review:begin' /tmp/comment.md
+          grep -q 'critical' /tmp/comment.md
+          node scripts/pr-review/render-comment.mjs --report /tmp/report.json --fail-on none >/dev/null
+          # 报告缺失时必须返回 2（供 workflow 区分“无问题”与“未产出结果”）
+          set +e
+          node scripts/pr-review/render-comment.mjs --report /tmp/does-not-exist.json >/dev/null 2>&1
+          MISSING=$?
+          set -e
+          if [ "$MISSING" -ne 2 ]; then echo "FAIL: 报告缺失应返回 2，实际 $MISSING"; exit 1; fi
+          echo "render-comment 断言全部通过"

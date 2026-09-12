@@ -10,6 +10,7 @@
 - **通用 Agent 执行器**：Pi 的 stdout 就是任务结果，不强制绑定 PR 或报告生成，适配 Issue 处理、代码审查与通用分析任务。
 - **CI 缓存提速**：内置 npm 下载缓存，避免重复下载 Pi CLI 及其依赖，显著减少 CI 启动耗时。
 - **AI 自主行动**：提示词决定任务与工具调用；允许 `bash` 时，AI 可按需调用 GitHub CLI 或外部命令。
+- **超大型 PR 审查**：配套 [本地比对方案](docs/large-pr-review.md)，在 Runner 内用全量 clone 做 git 比对，绕开 GitHub diff API 的 20000 行上限。
 
 ---
 
@@ -58,6 +59,8 @@ jobs:
 ```
 
 > `bash` 会让 Agent 继承当前进程权限，包括 `GH_TOKEN`。只在需要 AI 直接操作 GitHub 时启用，并使用最小化的 Workflow permissions。
+
+> **改动量很大的 PR？** 上面的写法靠 Agent 自己跑 `gh pr diff`，会撞上 GitHub 的 20000 行上限（`HTTP 406 too_large`）。这种场景请改用 [超大型 PR 审查](docs/large-pr-review.md)：全量 checkout + 本地生成比对上下文 + 结构化输出 + 幂等回评。
 
 ### 场景 2：通用代码库分析与任务执行
 

@@ -1,0 +1,189 @@
+# 超大型 PR 的本地比对审查（验证工作流）
+#
+# 设计要点：
+#   1. fetch-depth: 0 —— 必须全量 clone，否则无法计算 merge-base（脚本会直接报错退出）。
+#   2. 用 refs/pull/<N>/head 取 PR head，fork PR 也能取到；base 取 base.sha，
+#      非 pull_request 触发（workflow_dispatch）时用 gh 查 baseRefOid 兜底。
+#   3. 审查上下文由 scripts/pr-review/build-context.mjs 在 Runner 内用 git 生成，
+#      不调用 GitHub diff API，因此不受 20000 行上限（HTTP 406 too_large）影响。
+#   4. Agent 只输出结构化 report.json，评论渲染与发布由脚本/workflow 负责，保证可测与幂等。
+#
+# 在其它仓库使用时：把 scripts/pr-review/ 与 .github/prompts/pr-review.md 一并复制过去，
+# 并把下面的 `uses: ./` 换成 `uses: devcxl/agentic-action@<ref>`。
+#
+# 权限与安全：
+#   - 本工作流不执行 PR 中的代码，只读取 patch 与文件；回评需要 pull-requests: write。
+#   - fork PR 在 pull_request 事件下 token 只读且拿不到 secrets，因此只生成审查上下文，
+#     不会调用模型也不会回评。若确需审查 fork PR 并回评，应改用 pull_request_target +
+#     workflow_run 两段式，保持审查段无 secrets、只读。
+
+name: PR Review (large diff)
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: '要审查的 PR 编号'
+        required: true
+      max_chunks:
+        description: '本次最多审查的 chunk 数（0 = 不限）'
+        required: false
+        default: '0'
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # draft PR 默认不审查，减少无谓调用
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+
+    steps:
+      - name: Checkout PR head (full history)
+        uses: actions/checkout@v4
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number || inputs.pr_number }}/head
+          fetch-depth: 0
+
+      - name: Resolve base commit
+        id: base
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$EVENT_BASE_SHA" ]; then
+            BASE_SHA="$EVENT_BASE_SHA"
+          else
+            BASE_SHA=$(gh pr view "$PR_NUMBER" --json baseRefOid --jq .baseRefOid)
+          fi
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "base commit $BASE_SHA 不在本地，按 SHA 补取"
+            git fetch --no-tags origin "$BASE_SHA"
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "base commit: $BASE_SHA"
+
+      - name: Build review context from local git diff
+        env:
+          BASE_SHA: ${{ steps.base.outputs.base_sha }}
+        run: |
+          node scripts/pr-review/build-context.mjs \
+            --base "$BASE_SHA" \
+            --out .review-context \
+            --base-snapshot \
+            --max-chunk-lines 1500 \
+            --max-chunk-bytes 40960 \
+            --max-file-bytes 409600 \
+            --exclude '**/package-lock.json,**/pnpm-lock.yaml,**/yarn.lock,**/*.min.js,**/*.map,**/dist/**,**/vendor/**'
+
+      - name: Check provider credentials
+        id: creds
+        env:
+          PROVIDER_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
+        run: |
+          if [ -z "$PROVIDER_API_KEY" ]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::HALF_CABBAGE_API_KEY 未配置，跳过模型审查与回评（审查上下文生成已验证）"
+          else
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run Pi code review
+        id: review
+        if: steps.creds.outputs.available == 'true'
+        timeout-minutes: 75
+        uses: ./
+        with:
+          provider: 'half-cabbage'
+          model: 'minimax-m3'
+          thinking: 'high'
+          # 只读工具：审查所需信息已全部预生成（patches/ 与 base/ 快照），
+          # 因此不需要 bash，也就不向 Agent 暴露 GH_TOKEN。
+          # write 仅用于写入 report.json；若嫌写权限过大，可改为让 Agent 直接输出 JSON 再解析。
+          tools: 'read,grep,find,ls,write'
+          append_system_prompt: '.github/prompts/pr-review.md'
+          prompt: |
+            执行 PR #${{ github.event.pull_request.number || inputs.pr_number }} 的代码审查。
+
+            1. 读取 .review-context/REVIEW_CONTEXT.md 与 .review-context/manifest.json。
+            2. 按 manifest 的 chunk 顺序逐个审查 patches/ 中的 patch。
+            3. 按 append_system_prompt 中的输出契约，把结果写入 .review-context/report.json。
+
+            本次审查最多处理 ${{ inputs.max_chunks || '0' }} 个 chunk（0 表示不限）。
+            若 chunk 总数超出本次预算，请审查靠前的 chunk 并如实填写 coverage，
+            同时在 summary 中说明剩余未审查的范围。
+            审查对象是当前工作区（PR head），base 提交见 manifest.json。
+        env:
+          HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
+          HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+
+      - name: Render review comment
+        id: render
+        if: steps.creds.outputs.available == 'true'
+        run: |
+          set +e
+          if [ ! -f .review-context/report.json ]; then
+            {
+              echo "## Pi Agent 代码审查"
+              echo ""
+              echo "本次运行未能产出结构化审查结果（Agent 未按契约写入 \`report.json\`）。"
+              echo "请查看本次运行的 artifact 与日志。"
+            } > review-comment.md
+            echo "exit_code=2" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          node scripts/pr-review/render-comment.mjs \
+            --report .review-context/report.json \
+            --out review-comment.md \
+            --fail-on high
+          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Publish review comment (idempotent)
+        if: steps.creds.outputs.available == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # edit-last + create-if-none：同一 PR 的 synchronize 更新上一条评论而不是刷屏
+          gh pr comment "$PR_NUMBER" \
+            --body-file review-comment.md \
+            --edit-last --create-if-none
+
+      - name: Upload review artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-review-report
+          path: |
+            .review-context/
+            review-comment.md
+          retention-days: 14
+          if-no-files-found: warn
+
+      # 门禁在回评之后执行：保证即使问题严重也已留下审查结论
+      - name: Enforce fail-on gate
+        if: steps.creds.outputs.available == 'true'
+        run: |
+          case "${{ steps.render.outputs.exit_code }}" in
+            0) echo "审查门禁通过" ;;
+            1)
+              echo "::error::审查发现 high/critical 问题，详见 PR 评论"
+              exit 1
+              ;;
+            *)
+              echo "::error::审查未能产出有效结果（report.json 缺失或非法），请检查运行日志"
+              exit 1
+              ;;
+          esac
