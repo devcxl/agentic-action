@@ -169,6 +169,8 @@ jobs:
           path: |
             .review-context/
             review-comment.md
+          # .review-context 是隐藏目录，默认不会被上传
+          include-hidden-files: true
           retention-days: 14
           if-no-files-found: warn
 
