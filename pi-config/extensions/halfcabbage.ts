@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "half-cabbage";
+const DEFAULT_BASE_URL = "https://new-api.devcxl.cn/v1";
 
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 32_768;
@@ -15,6 +16,11 @@ const CACHE_FILE = join(tmpdir(), "pi-halfcabbage-models-cache.json");
 interface ModelsDevModel {
   name?: string;
   reasoning?: boolean;
+  reasoning_options?: Array<{
+    type?: string;
+    values?: string[];
+    max?: number;
+  }>;
   limit?: { context?: number; output?: number };
   modalities?: { input?: string[] };
   cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number };
@@ -27,17 +33,43 @@ interface CacheEntry {
   catalog: Record<string, ModelsDevModel>;
 }
 
-const log = (message: string) => console.error(`[half-cabbage] ${message}`);
+/**
+ * 调试日志：默认静默。控制台输出会直接写进 TUI，打断边框渲染，
+ * 因此仅在 HALF_CABBAGE_DEBUG=1 时开启。
+ */
+const DEBUG = process.env.HALF_CABBAGE_DEBUG === "1";
+const log = (message: string) => {
+  if (DEBUG) console.info(`[half-cabbage] ${message}`);
+};
 
 function normalizeBaseUrl(url: string): string {
   const trimmed = url.replace(/\/+$/, "");
   return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
 }
 
+function getStoredAuth(): { key?: string; baseUrl?: string } {
+  try {
+    const authPath = join(homedir(), ".pi", "agent", "auth.json");
+    if (!existsSync(authPath)) return {};
+    const data = JSON.parse(readFileSync(authPath, "utf8")) as Record<
+      string,
+      { type?: string; key?: string; env?: Record<string, string> }
+    >;
+    const entry = data[PROVIDER_ID];
+    return {
+      key: entry?.key,
+      baseUrl: entry?.env?.HALF_CABBAGE_BASE_URL,
+    };
+  } catch {
+    return {};
+  }
+}
+
 /** 拉取 New API /v1/models 的模型 ID 列表，失败时抛错由调用方降级 */
-async function fetchModelIds(baseUrl: string, apiKey: string): Promise<string[]> {
+async function fetchModelIds(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
+    signal,
   });
 
   if (!response.ok) {
@@ -79,11 +111,45 @@ async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> 
 /** 合并 models.dev 元数据与兼容性配置，转换为 pi 模型定义 */
 function toPiModel(id: string, meta: ModelsDevModel | undefined) {
   const hasImage = meta?.modalities?.input?.includes("image") ?? false;
+  const isReasoning = meta?.reasoning ?? /r1|reasoning|thinking/i.test(id);
+
+  const effortOption = meta?.reasoning_options?.find((opt) => opt.type === "effort");
+  // 某些原生全量推理模型（如 DeepSeek-R1）固定推理，不支持 reasoning_effort 参数
+  const isFixedReasoningOnly = /r1\b/i.test(id);
+  const supportsEffort = Boolean(effortOption || (isReasoning && !isFixedReasoningOnly));
+
+  let thinkingLevelMap:
+    | Partial<Record<"off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max", string | null>>
+    | undefined;
+
+  if (supportsEffort) {
+    if (effortOption?.values && Array.isArray(effortOption.values)) {
+      const values = new Set(effortOption.values);
+      thinkingLevelMap = {
+        minimal: values.has("minimal") ? "minimal" : null,
+        low: values.has("low") ? "low" : null,
+        medium: values.has("medium") ? "medium" : null,
+        high: values.has("high") ? "high" : null,
+        xhigh: values.has("xhigh") ? "xhigh" : null,
+        max: values.has("max") ? "max" : null,
+      };
+    } else {
+      // 默认兜底映射：支持标准等级并显式开启 max
+      thinkingLevelMap = {
+        low: "low",
+        medium: "medium",
+        high: "high",
+        max: "max",
+      };
+    }
+  }
+
   return {
     id,
     name: `${meta?.name ?? id} [Half Cabbage]`,
-    reasoning: meta?.reasoning ?? false,
-    input: hasImage ? ["text", "image"] : ["text"],
+    reasoning: isReasoning,
+    thinkingLevelMap,
+    input: (hasImage ? ["text", "image"] : ["text"]) as ("text" | "image")[],
     contextWindow: meta?.limit?.context ?? DEFAULT_CONTEXT_WINDOW,
     maxTokens: meta?.limit?.output ?? DEFAULT_MAX_TOKENS,
     cost: {
@@ -95,7 +161,7 @@ function toPiModel(id: string, meta: ModelsDevModel | undefined) {
     // compat 是模型级配置（ProviderConfig 无此字段），需逐模型声明
     compat: {
       supportsDeveloperRole: false,
-      supportsReasoningEffort: false,
+      supportsReasoningEffort: supportsEffort,
     },
   };
 }
@@ -124,16 +190,19 @@ function writeCache(baseUrl: string, modelIds: string[], catalog: Record<string,
 }
 
 /** 解析配置并拉取模型列表；优先用缓存，失败时回退过期缓存 */
-async function loadModels(baseUrl: string, apiKey: string) {
+async function loadModels(baseUrl: string, apiKey: string, signal?: AbortSignal, force = false) {
   const cached = readCache(baseUrl);
 
-  if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
+  if (!force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     log(`using cached model list (${cached.modelIds.length} models)`);
     return cached.modelIds.map((id) => toPiModel(id, cached.catalog[id]));
   }
 
   const [modelIds, catalog] = await Promise.all([
-    fetchModelIds(baseUrl, apiKey).catch((error: unknown) => {
+    fetchModelIds(baseUrl, apiKey, signal).catch((error: unknown) => {
+      if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
+        return null;
+      }
       log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
       return null;
     }),
@@ -154,21 +223,28 @@ async function loadModels(baseUrl: string, apiKey: string) {
 }
 
 export default async function (pi: ExtensionAPI) {
-  const baseUrl = process.env.HALF_CABBAGE_BASE_URL;
-  const apiKey = process.env.HALF_CABBAGE_API_KEY || process.env.HALF_CABBAGE_KEY;
-  const apiKeyEnvName = process.env.HALF_CABBAGE_API_KEY ? "$HALF_CABBAGE_API_KEY" : "$HALF_CABBAGE_KEY";
+  const storedAuth = getStoredAuth();
+  const rawBaseUrl = process.env.HALF_CABBAGE_BASE_URL || storedAuth.baseUrl || DEFAULT_BASE_URL;
+  const endpoint = normalizeBaseUrl(rawBaseUrl);
 
-  if (!baseUrl || !apiKey) {
-    log("HALF_CABBAGE_BASE_URL / HALF_CABBAGE_API_KEY not set, skipping provider registration");
-    return;
-  }
+  const envKey = process.env.HALF_CABBAGE_API_KEY || process.env.HALF_CABBAGE_KEY;
+  const apiKey = envKey || storedAuth.key;
+  const apiKeyEnvName = process.env.HALF_CABBAGE_API_KEY
+    ? "$HALF_CABBAGE_API_KEY"
+    : process.env.HALF_CABBAGE_KEY
+    ? "$HALF_CABBAGE_KEY"
+    : "$HALF_CABBAGE_API_KEY";
 
-  const endpoint = normalizeBaseUrl(baseUrl);
-  const models = await loadModels(endpoint, apiKey);
+  let initialModels = [];
 
-  if (models.length === 0) {
-    log("no models available, skipping provider registration");
-    return;
+  if (apiKey) {
+    initialModels = await loadModels(endpoint, apiKey);
+  } else {
+    const cached = readCache(endpoint);
+    if (cached) {
+      log(`using cached model list without active key (${cached.modelIds.length} models)`);
+      initialModels = cached.modelIds.map((id) => toPiModel(id, cached.catalog[id]));
+    }
   }
 
   pi.registerProvider(PROVIDER_ID, {
@@ -176,8 +252,28 @@ export default async function (pi: ExtensionAPI) {
     baseUrl: endpoint,
     apiKey: apiKeyEnvName,
     api: "openai-completions",
-    models,
+    models: initialModels,
+    refreshModels: async (context) => {
+      const activeKey =
+        (context.credential?.type === "api_key" ? context.credential.key : undefined) ||
+        process.env.HALF_CABBAGE_API_KEY ||
+        process.env.HALF_CABBAGE_KEY ||
+        getStoredAuth().key;
+
+      if (!activeKey) {
+        log("no API key available during model refresh");
+        return initialModels;
+      }
+
+      log("refreshing models via API...");
+      const refreshed = await loadModels(endpoint, activeKey, context.signal, true);
+      if (refreshed.length > 0) {
+        initialModels = refreshed;
+        return refreshed;
+      }
+      return initialModels;
+    },
   });
 
-  log(`registered ${models.length} models`);
+  log(`registered ${initialModels.length} models (key: ${apiKey ? (envKey ? "env" : "stored") : "not set"})`);
 }

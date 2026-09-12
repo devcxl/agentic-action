@@ -109,6 +109,10 @@ runs:
       id: run_pi
       shell: bash
       env:
+        CI: "true"
+        GIT_PAGER: "cat"
+        PAGER: "cat"
+        GH_PROMPT_DISABLED: "1"
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
         INPUT_APPEND_SYSTEM_PROMPT: ${{ inputs.append_system_prompt }}
@@ -125,8 +129,8 @@ runs:
         INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        # 1. 基础运行参数：非交互式
-        PI_ARGS=("-p")
+        # 1. 基础运行参数：非交互式 + 信任项目文件
+        PI_ARGS=("-p" "--approve")
 
         # 3. 动态追加 Provider 与 Model
         [ -n "$INPUT_PROVIDER" ] && PI_ARGS+=("--provider" "$INPUT_PROVIDER")
@@ -176,7 +180,7 @@ runs:
         RESULT_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/pi-result.XXXXXX")
         echo "Executing: pi ${PI_ARGS[*]} ${FILES[*]} [prompt]"
         set +e
-        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" | tee "$RESULT_FILE"
+        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" < /dev/null | tee "$RESULT_FILE"
         EXIT_CODE=${PIPESTATUS[0]}
         set -e
         if [ "$EXIT_CODE" -ne 0 ]; then
