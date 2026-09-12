@@ -61,3 +61,5 @@ node scripts/pr-review/build-context.mjs \
 - **超大改动仍未覆盖完**：分块解决的是"能不能读"，不是"AI 会不会读完"。预算不足时靠 `coverage` 如实暴露，配合 `workflow_dispatch` 的 `max_chunks` 分批推进。
 - **inline comment 未实现**：本方案只发单条 summary 评论。行级评论需要把 head 行号映射到 PR diff 的 `line+side`，在排除文件与超大 diff 场景下容易 422，留待后续。
 - **`write` 工具仍有仓库写权限**：Agent 只被要求写 `report.json`，但工具层面无法限制路径；如需更严，可改为从 stdout 解析 JSON。
+
+<!-- ci verification demo: triggers review context build -->
