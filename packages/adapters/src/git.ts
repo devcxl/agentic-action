@@ -436,11 +436,17 @@ function sanitizePatchHeaderPath(rawPath: string): string {
 }
 
 function listFilesRecursively(
+  repoCwd: string,
   currentDir: string,
+  skipped: SkippedFiles,
   acc: string[] = [],
 ): string[] {
   const stat = lstatSync(currentDir);
-  if (stat.isSymbolicLink()) return acc;
+  if (stat.isSymbolicLink()) {
+    const rel = relative(repoCwd, currentDir).split("\\").join("/") || ".";
+    skipped.excluded.push({ path: rel, reason: "symlink" });
+    return acc;
+  }
   if (stat.isFile()) {
     acc.push(currentDir);
     return acc;
@@ -448,11 +454,15 @@ function listFilesRecursively(
   if (!stat.isDirectory()) return acc;
 
   for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     const childPath = join(currentDir, entry.name);
+    if (entry.isSymbolicLink()) {
+      const rel = relative(repoCwd, childPath).split("\\").join("/");
+      skipped.excluded.push({ path: rel, reason: "symlink" });
+      continue;
+    }
+    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     if (entry.isDirectory()) {
-      listFilesRecursively(childPath, acc);
+      listFilesRecursively(repoCwd, childPath, skipped, acc);
     } else if (entry.isFile()) {
       acc.push(childPath);
     }
@@ -493,10 +503,10 @@ export function collectSnapshotInventory(
   const extraExcludeRes = userExcludes.map(globToRegExp);
   const includeRes = userIncludes.map(globToRegExp);
 
-  const absFiles = listFilesRecursively(targetAbs);
+  const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
+  const absFiles = listFilesRecursively(repoCwd, targetAbs, skipped);
   const files: DiffFileEntry[] = [];
   const fileContents = new Map<string, string>();
-  const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
   let totalSnapshotBytes = 0;
 
   for (const absPath of absFiles) {
@@ -517,6 +527,13 @@ export function collectSnapshotInventory(
     const stat = lstatSync(absPath);
     if (stat.size === 0) {
       skipped.empty.push({ path, reason: "empty-file" });
+      continue;
+    }
+    if (stat.size > maxFileBytes) {
+      skipped.excluded.push({
+        path,
+        reason: `over-max-file-bytes(${maxFileBytes})`,
+      });
       continue;
     }
     if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {

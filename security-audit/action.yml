@@ -269,7 +269,7 @@ runs:
       env:
         GATE_CODE: ${{ steps.audit.outputs.gate_code }}
       run: |
-        case "${GATE_CODE:-0}" in
+        case "${GATE_CODE:-30}" in
           0)
             exit 0
             ;;
@@ -286,7 +286,7 @@ runs:
             exit 30
             ;;
           *)
-            echo "::error::Security audit exited with unexpected status ${GATE_CODE}"
+            echo "::error::Security audit exited with unexpected status ${GATE_CODE:-empty}"
             exit 30
             ;;
         esac

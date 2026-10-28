@@ -25,6 +25,8 @@ import {
   materializeReviewContext,
   renderReviewComment,
   resolveBaseSha,
+  sanitizeCommentMarker,
+  sanitizeReportTitle,
   scrubGitCredentials,
   upsertMarkerComment,
   writeGitHubOutput,
@@ -102,8 +104,10 @@ export async function runPrReview(
   const concurrency = Math.max(1, Math.min(8, Number(env.INPUT_CONCURRENCY || "2") || 2));
   const allowPartial = (env.INPUT_ALLOW_PARTIAL || "false").trim() === "true";
   const postComment = (env.INPUT_POST_COMMENT || "true").trim() === "true";
-  const marker = (env.INPUT_COMMENT_MARKER || "pi-review").trim();
-  const reportTitle = (env.INPUT_REPORT_TITLE || "Pi Agent 代码审查").trim();
+  const marker = sanitizeCommentMarker(env.INPUT_COMMENT_MARKER || "pi-review");
+  const reportTitle = sanitizeReportTitle(
+    env.INPUT_REPORT_TITLE || "Pi Agent 代码审查",
+  );
   const auditModeRaw = (env.INPUT_AUDIT_MODE || "diff").trim().toLowerCase();
   const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "")

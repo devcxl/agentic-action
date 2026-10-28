@@ -131,18 +131,26 @@ async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> 
  * 进程内共享的在途请求。Pi 启动时会多次触发模型刷新，
  * 共享同一份请求可避免重复下载（models.dev 目录约 6 MB）。
  */
+let inFlightModelIdsKey: string | null = null;
 let inFlightModelIds: Promise<string[] | null> | null = null;
 let inFlightCatalog: Promise<Record<string, ModelsDevModel>> | null = null;
 
 function requestModelIds(baseUrl: string, apiKey: string): Promise<string[] | null> {
-  inFlightModelIds ??= fetchModelIds(baseUrl, apiKey)
-    .catch((error: unknown) => {
-      log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
-      return null;
-    })
-    .finally(() => {
-      inFlightModelIds = null;
-    });
+  const key = `${baseUrl}|${apiKey.slice(-6)}`;
+  if (!inFlightModelIds || inFlightModelIdsKey !== key) {
+    inFlightModelIdsKey = key;
+    inFlightModelIds = fetchModelIds(baseUrl, apiKey)
+      .catch((error: unknown) => {
+        log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
+        return null;
+      })
+      .finally(() => {
+        if (inFlightModelIdsKey === key) {
+          inFlightModelIds = null;
+          inFlightModelIdsKey = null;
+        }
+      });
+  }
   return inFlightModelIds;
 }
 
@@ -387,7 +395,7 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
         return initialModels;
       }
 
-      const force = context.force === true;
+      const force = context.force !== false;
       log(`refreshing models via API${force ? " (forced)" : ""}...`);
       const refreshed = await loadModels(endpoint, activeKey, { signal: context.signal, force });
       if (refreshed.length > 0) {
@@ -397,11 +405,6 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
       return initialModels;
     },
   });
-
-  const hasJevModel = initialModels.some((model) => /^jev(?:-|$)/i.test(model.id));
-  if (hasJevModel && apiKey && !process.env.TYPESAFE_API_KEY) {
-    pi.registerProvider("typesafe", { baseUrl: endpoint, apiKey });
-  }
 
   log(`registered ${initialModels.length} models (key: ${apiKey ? (envKey ? "env" : "stored") : "not set"})`);
 }

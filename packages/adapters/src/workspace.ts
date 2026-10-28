@@ -16,7 +16,11 @@ import type {
 import { redactText } from "@agentic-action/core";
 import type { GitHubIssueData } from "./github.ts";
 
-export { renderReviewComment } from "./comment-renderer.ts";
+export {
+  renderReviewComment,
+  sanitizeCommentMarker,
+  sanitizeReportTitle,
+} from "./comment-renderer.ts";
 
 export function resolveTextOrFile(value?: string, cwd = process.cwd()): string {
   if (!value) return "";

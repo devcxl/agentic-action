@@ -441,7 +441,7 @@ async function runPiSubprocess(sandbox, options = {}) {
       const errText = typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (isTransientErrorMessage(errText) || usage.totalTokens > 0 && /\b401\b/.test(errText)) {
           transientError = errText;
         }
       }

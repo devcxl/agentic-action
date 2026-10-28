@@ -8863,20 +8863,28 @@ var SNAPSHOT_SKIP_DIRS = /* @__PURE__ */ new Set([".git", "node_modules"]);
 function sanitizePatchHeaderPath(rawPath) {
   return rawPath.replace(/[\r\n\0-\x1f]+/g, "_");
 }
-function listFilesRecursively(currentDir, acc = []) {
+function listFilesRecursively(repoCwd, currentDir, skipped, acc = []) {
   const stat = lstatSync(currentDir);
-  if (stat.isSymbolicLink()) return acc;
+  if (stat.isSymbolicLink()) {
+    const rel = relative(repoCwd, currentDir).split("\\").join("/") || ".";
+    skipped.excluded.push({ path: rel, reason: "symlink" });
+    return acc;
+  }
   if (stat.isFile()) {
     acc.push(currentDir);
     return acc;
   }
   if (!stat.isDirectory()) return acc;
   for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
-    if (entry.isSymbolicLink()) continue;
-    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     const childPath = join(currentDir, entry.name);
+    if (entry.isSymbolicLink()) {
+      const rel = relative(repoCwd, childPath).split("\\").join("/");
+      skipped.excluded.push({ path: rel, reason: "symlink" });
+      continue;
+    }
+    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     if (entry.isDirectory()) {
-      listFilesRecursively(childPath, acc);
+      listFilesRecursively(repoCwd, childPath, skipped, acc);
     } else if (entry.isFile()) {
       acc.push(childPath);
     }
@@ -8906,10 +8914,10 @@ function collectSnapshotInventory(options) {
   const excludeRes = defaultPatterns.map(globToRegExp);
   const extraExcludeRes = userExcludes.map(globToRegExp);
   const includeRes = userIncludes.map(globToRegExp);
-  const absFiles = listFilesRecursively(targetAbs);
+  const skipped = { excluded: [], binary: [], empty: [] };
+  const absFiles = listFilesRecursively(repoCwd, targetAbs, skipped);
   const files = [];
   const fileContents = /* @__PURE__ */ new Map();
-  const skipped = { excluded: [], binary: [], empty: [] };
   let totalSnapshotBytes = 0;
   for (const absPath of absFiles) {
     const path = relative(repoCwd, absPath).split("\\").join("/");
@@ -8928,6 +8936,13 @@ function collectSnapshotInventory(options) {
     const stat = lstatSync(absPath);
     if (stat.size === 0) {
       skipped.empty.push({ path, reason: "empty-file" });
+      continue;
+    }
+    if (stat.size > maxFileBytes) {
+      skipped.excluded.push({
+        path,
+        reason: `over-max-file-bytes(${maxFileBytes})`
+      });
       continue;
     }
     if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
@@ -9364,7 +9379,7 @@ async function runPiSubprocess(sandbox, options = {}) {
       const errText = typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (isTransientErrorMessage(errText) || usage.totalTokens > 0 && /\b401\b/.test(errText)) {
           transientError = errText;
         }
       }
@@ -9552,7 +9567,9 @@ async function runPiWithRetry(sandbox, options = {}) {
     if (lastResult.exitCode === 0 && hasToolOutput) {
       return { result: lastResult, attempts: attempt, durationsMs };
     }
-    const isRetryable = !options.signal?.aborted && !hasToolOutput && (lastResult.timedOut || Boolean(lastResult.transientError) || Boolean(options.requiredTool && !lastResult.aborted));
+    const isRetryable = !options.signal?.aborted && !hasToolOutput && (lastResult.timedOut || Boolean(lastResult.transientError) || Boolean(
+      options.requiredTool && lastResult.exitCode === 0 && !lastResult.aborted && !lastResult.errorMessage
+    ));
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };
     }
@@ -9707,9 +9724,15 @@ function countBySeverity(findings) {
   }
   return counts;
 }
+function sanitizeCommentMarker(raw) {
+  return (raw || "pi-review").replace(/[^A-Za-z0-9_.-]/g, "") || "pi-review";
+}
+function sanitizeReportTitle(raw) {
+  return (raw || "Pi Agent \u4EE3\u7801\u5BA1\u67E5").replace(/[\r\n`]+/g, " ").replace(/<!--|-->/g, "").trim().slice(0, 120) || "Pi Agent \u4EE3\u7801\u5BA1\u67E5";
+}
 function renderReviewComment(report, options = {}) {
-  const marker = (options.marker || "pi-review").replace(/[^A-Za-z0-9_.-]/g, "") || "pi-review";
-  const title = (options.title || "Pi Agent \u4EE3\u7801\u5BA1\u67E5").replace(/[\r\n`]+/g, " ").replace(/<!--|-->/g, "").trim().slice(0, 120) || "Pi Agent \u4EE3\u7801\u5BA1\u67E5";
+  const marker = sanitizeCommentMarker(options.marker);
+  const title = sanitizeReportTitle(options.title);
   const maxBytes = options.maxBytes ?? COMMENT_LIMIT - 1024;
   const counts = countBySeverity(report.findings);
   const lines = [];
@@ -10477,8 +10500,10 @@ async function runPrReview(env = process.env, options = {}) {
   const concurrency = Math.max(1, Math.min(8, Number(env.INPUT_CONCURRENCY || "2") || 2));
   const allowPartial = (env.INPUT_ALLOW_PARTIAL || "false").trim() === "true";
   const postComment = (env.INPUT_POST_COMMENT || "true").trim() === "true";
-  const marker = (env.INPUT_COMMENT_MARKER || "pi-review").trim();
-  const reportTitle = (env.INPUT_REPORT_TITLE || "Pi Agent \u4EE3\u7801\u5BA1\u67E5").trim();
+  const marker = sanitizeCommentMarker(env.INPUT_COMMENT_MARKER || "pi-review");
+  const reportTitle = sanitizeReportTitle(
+    env.INPUT_REPORT_TITLE || "Pi Agent \u4EE3\u7801\u5BA1\u67E5"
+  );
   const auditModeRaw = (env.INPUT_AUDIT_MODE || "diff").trim().toLowerCase();
   const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);

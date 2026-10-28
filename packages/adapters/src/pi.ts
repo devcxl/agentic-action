@@ -144,7 +144,10 @@ export async function runPiSubprocess(
         typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (
+          isTransientErrorMessage(errText) ||
+          (usage.totalTokens > 0 && /\b401\b/.test(errText))
+        ) {
           transientError = errText;
         }
       }
@@ -383,7 +386,12 @@ export async function runPiWithRetry(
       !hasToolOutput &&
       (lastResult.timedOut ||
         Boolean(lastResult.transientError) ||
-        Boolean(options.requiredTool && !lastResult.aborted));
+        Boolean(
+          options.requiredTool &&
+            lastResult.exitCode === 0 &&
+            !lastResult.aborted &&
+            !lastResult.errorMessage,
+        ));
 
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };

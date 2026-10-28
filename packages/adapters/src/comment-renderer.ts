@@ -40,6 +40,20 @@ function countBySeverity(
   return counts;
 }
 
+export function sanitizeCommentMarker(raw?: string): string {
+  return (raw || "pi-review").replace(/[^A-Za-z0-9_.-]/g, "") || "pi-review";
+}
+
+export function sanitizeReportTitle(raw?: string): string {
+  return (
+    (raw || "Pi Agent 代码审查")
+      .replace(/[\r\n`]+/g, " ")
+      .replace(/<!--|-->/g, "")
+      .trim()
+      .slice(0, 120) || "Pi Agent 代码审查"
+  );
+}
+
 export function renderReviewComment(
   report: ReviewReport,
   options: {
@@ -49,13 +63,8 @@ export function renderReviewComment(
     secretValues?: readonly string[];
   } = {},
 ): string {
-  const marker =
-    (options.marker || "pi-review").replace(/[^A-Za-z0-9_.-]/g, "") || "pi-review";
-  const title = (options.title || "Pi Agent 代码审查")
-    .replace(/[\r\n`]+/g, " ")
-    .replace(/<!--|-->/g, "")
-    .trim()
-    .slice(0, 120) || "Pi Agent 代码审查";
+  const marker = sanitizeCommentMarker(options.marker);
+  const title = sanitizeReportTitle(options.title);
   const maxBytes = options.maxBytes ?? COMMENT_LIMIT - 1024;
   const counts = countBySeverity(report.findings);
   const lines: string[] = [];
