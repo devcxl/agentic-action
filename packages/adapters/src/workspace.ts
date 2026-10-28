@@ -150,6 +150,38 @@ export function materializeReviewContext(options: {
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
   writeFileSync(contextDocPath, renderContextDoc(manifest, outDir), "utf8");
 
+  const chunksDir = join(outDir, "chunks");
+  mkdirSync(chunksDir, { recursive: true });
+  const fileByPath = new Map(plan.filesIncluded.map((f) => [f.path, f]));
+  for (const chunk of plan.chunks) {
+    const chunkBundlePath = join(
+      chunksDir,
+      `chunk-${String(chunk.index).padStart(3, "0")}.patch`,
+    );
+    const sections: string[] = [
+      `# Chunk #${chunk.index}/${plan.plannedChunks} Combined Patches (${chunk.files.length} files)`,
+      "",
+    ];
+    for (const filePath of chunk.files) {
+      const meta = fileByPath.get(filePath);
+      if (!meta || !meta.patch) continue;
+      const fullPatchPath = join(outDir, meta.patch);
+      if (meta.oversized) {
+        sections.push(
+          `===== FILE: ${meta.path} (OVERSIZED ${meta.bytes} bytes; read ${fullPatchPath} with offset/limit) =====`,
+          "",
+        );
+      } else if (existsSync(fullPatchPath)) {
+        sections.push(
+          `===== FILE: ${meta.path} (status=${meta.status}, +${meta.added}/-${meta.deleted}) =====`,
+          readFileSync(fullPatchPath, "utf8").trimEnd(),
+          "",
+        );
+      }
+    }
+    writeFileSync(chunkBundlePath, `${sections.join("\n")}\n`, "utf8");
+  }
+
   return { manifestPath, contextDocPath, linkedIssueFiles };
 }
 

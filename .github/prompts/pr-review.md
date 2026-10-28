@@ -16,12 +16,10 @@
 
 ## 读取方法（必须遵守）
 
-1. 先读 `<CONTEXT_DIR>/REVIEW_CONTEXT.md`（其中已列出所有待审文件及其 `patches/*.patch` 路径）。
-2. **并行批量读取**：在单轮内尽可能**并行发起多个 `read` 工具调用**一次性读取当前分块的全部 `.patch` 文件，避免一轮只读一个文件。
-3. 单个 patch 若超过 read 工具单次上限（`oversized: true`），用 read 的 `offset` / `limit` 分页读取。
-4. **按需对照上下文**：仅在 patch 上下文不足以判断缺陷时，才定点读取 `<CONTEXT_DIR>/base/` 或工作区中的同名文件。**总工具调用轮数严格控制在 6 轮以内**，读完后立即调用 `submit_review`，不要反复核对行号或通读无关文件。
-5. 严禁执行 `gh pr diff`：超大型 PR 会被 GitHub API 以 406 拒绝。
-6. 被 `skipped` 排除的文件不在本次审查范围内；如你认为某个排除项风险很高，可在 summary 中单独提示，但不要伪造行级结论。
+1. 第一轮直接并行 `read` 指令中给出的预合并分块补丁 `<CONTEXT_DIR>/chunks/chunk-00X.patch` 与 `<CONTEXT_DIR>/REVIEW_CONTEXT.md`。`chunk-00X.patch` 已内联本分块所有非超大文件的完整 diff，**无需再逐个读取 `<CONTEXT_DIR>/patches/*.patch`**。
+2. 仅当 `chunk-00X.patch` 中标注某文件为 `OVERSIZED` 时，才按提示用 `offset` / `limit` 分页读取对应的单文件 patch。
+3. **严格控制轮次**：仅在 diff 上下文不足以确认真实缺陷时，最多做 1 轮定点 `read` 对照 `<CONTEXT_DIR>/base/` 或工作区同名文件。**总工具调用轮数严格控制在 3 轮以内**，随后立即调用 `submit_review` 提交结果。
+4. 严禁执行 `gh pr diff`；被 `skipped` 排除的文件不在本次审查范围内。
 
 ## 安全边界
 

@@ -9894,6 +9894,38 @@ function materializeReviewContext(options) {
   const contextDocPath = join2(outDir, "REVIEW_CONTEXT.md");
   writeFileSync2(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
   writeFileSync2(contextDocPath, renderContextDoc(manifest, outDir), "utf8");
+  const chunksDir = join2(outDir, "chunks");
+  mkdirSync2(chunksDir, { recursive: true });
+  const fileByPath = new Map(plan.filesIncluded.map((f) => [f.path, f]));
+  for (const chunk of plan.chunks) {
+    const chunkBundlePath = join2(
+      chunksDir,
+      `chunk-${String(chunk.index).padStart(3, "0")}.patch`
+    );
+    const sections = [
+      `# Chunk #${chunk.index}/${plan.plannedChunks} Combined Patches (${chunk.files.length} files)`,
+      ""
+    ];
+    for (const filePath of chunk.files) {
+      const meta = fileByPath.get(filePath);
+      if (!meta || !meta.patch) continue;
+      const fullPatchPath = join2(outDir, meta.patch);
+      if (meta.oversized) {
+        sections.push(
+          `===== FILE: ${meta.path} (OVERSIZED ${meta.bytes} bytes; read ${fullPatchPath} with offset/limit) =====`,
+          ""
+        );
+      } else if (existsSync2(fullPatchPath)) {
+        sections.push(
+          `===== FILE: ${meta.path} (status=${meta.status}, +${meta.added}/-${meta.deleted}) =====`,
+          readFileSync2(fullPatchPath, "utf8").trimEnd(),
+          ""
+        );
+      }
+    }
+    writeFileSync2(chunkBundlePath, `${sections.join("\n")}
+`, "utf8");
+  }
   return { manifestPath, contextDocPath, linkedIssueFiles };
 }
 function renderContextDoc(manifest, outDir) {
@@ -10058,23 +10090,29 @@ function buildReviewPrompt(params) {
     reviewPlan,
     extraPrompt
   } = params;
+  const targetChunkIndex = chunk?.index ?? 1;
+  const combinedChunkPatch = join3(
+    contextDir,
+    "chunks",
+    `chunk-${String(targetChunkIndex).padStart(3, "0")}.patch`
+  );
   const lines = [
     `\u6267\u884C PR ${prNumber ? `#${prNumber} ` : ""}\u7684\u4EE3\u7801\u5BA1\u67E5\u3002`,
     "",
     `\u5BA1\u67E5\u4E0A\u4E0B\u6587\u76EE\u5F55\uFF08<CONTEXT_DIR>\uFF09\u4F4D\u4E8E\uFF1A\`${contextDir}\``,
     "",
-    `1. \u5148\u8BFB\u53D6 \`${join3(contextDir, "REVIEW_CONTEXT.md")}\`\uFF08\u5176\u4E2D\u5DF2\u5305\u542B\u6587\u4EF6\u4E0E\u5BF9\u5E94 \`patches/*.patch\` \u8DEF\u5F84\u5217\u8868\uFF09\u3002`
+    `1. \u76F4\u63A5\u8C03\u7528 \`read\` \u8BFB\u53D6\u9884\u5408\u5E76\u7684\u5F53\u524D\u5206\u5757\u8865\u4E01\u6587\u4EF6 \`${combinedChunkPatch}\`\uFF08\u5DF2\u5305\u542B\u672C\u5206\u5757\u6240\u6709\u975E\u8D85\u5927\u6587\u4EF6\u7684\u5B8C\u6574 diff\uFF0C\u65E0\u9700\u518D\u9010\u4E2A\u8BFB\u53D6 \`patches/*.patch\`\uFF09\u4EE5\u53CA \`${join3(contextDir, "REVIEW_CONTEXT.md")}\`\u3002`
   ];
   if (chunk) {
     lines.push(
       `2. \u672C\u6B21\u8C03\u7528\u4EC5\u8D1F\u8D23\u5BA1\u67E5 Chunk #${chunk.index}\uFF08\u5171\u8BA1\u5212 ${plannedChunks ?? 1}/${totalChunks ?? 1} \u4E2A\u5206\u5757\uFF09\uFF0C\u5305\u542B\u4EE5\u4E0B\u6587\u4EF6\uFF1A`,
       ...chunk.files.map((f) => `   - \`${f}\``),
-      `3. \u8BF7\u5728\u5355\u8F6E\u6216\u5C3D\u91CF\u5C11\u7684\u8F6E\u6B21\u5185**\u5E76\u884C\u8C03\u7528 \`read\`** \u8BFB\u53D6 \`${join3(contextDir, "patches")}\` \u4E2D\u5BF9\u5E94\u4E0A\u8FF0\u6587\u4EF6\u7684 patch\uFF1B\u4EC5\u5728\u786E\u9700\u6838\u5B9E\u4E0A\u4E0B\u6587\u65F6\u6309\u9700\u8BFB\u53D6 \`${join3(contextDir, "base")}\` \u6216\u5DE5\u4F5C\u533A\u6587\u4EF6\uFF08\u603B\u5DE5\u5177\u8F6E\u6B21\u63A7\u5236\u5728 6 \u8F6E\u4EE5\u5185\uFF09\u3002`,
+      `3. \u4EC5\u5728 \`${combinedChunkPatch}\` \u6807\u6CE8\u67D0\u6587\u4EF6\u4E3A OVERSIZED \u6216\u67D0\u5904\u8DE8\u6587\u4EF6\u8FB9\u754C\u786E\u9700\u6838\u5B9E\u65F6\uFF0C\u624D\u8865\u5145\u8BFB\u53D6\u5BF9\u5E94\u6587\u4EF6\uFF08\u603B\u5DE5\u5177\u8F6E\u6B21\u4E25\u683C\u63A7\u5236\u5728 3 \u8F6E\u4EE5\u5185\uFF09\u3002`,
       "4. \u5BA1\u67E5\u5B8C\u6210\u540E\u7ACB\u5373\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u672C chunk \u7684\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u8BBA\u3002"
     );
   } else {
     lines.push(
-      `2. \u8BF7\u5728\u5355\u8F6E\u6216\u5C3D\u91CF\u5C11\u7684\u8F6E\u6B21\u5185**\u5E76\u884C\u8C03\u7528 \`read\`** \u8BFB\u53D6 \`${join3(contextDir, "patches")}\` \u4E2D\u7684\u5168\u90E8 patch\uFF1B\u4EC5\u5728\u786E\u9700\u6838\u5B9E\u4E0A\u4E0B\u6587\u65F6\u8BFB\u53D6 \`${join3(contextDir, "base")}\` \u6216\u5DE5\u4F5C\u533A\u6587\u4EF6\uFF08\u603B\u5DE5\u5177\u8F6E\u6B21\u63A7\u5236\u5728 6 \u8F6E\u4EE5\u5185\uFF09\u3002`,
+      `2. \u4EC5\u5728 \`${combinedChunkPatch}\` \u6807\u6CE8\u67D0\u6587\u4EF6\u4E3A OVERSIZED \u6216\u67D0\u5904\u8DE8\u6587\u4EF6\u8FB9\u754C\u786E\u9700\u6838\u5B9E\u65F6\uFF0C\u624D\u8865\u5145\u8BFB\u53D6\u5BF9\u5E94\u6587\u4EF6\uFF08\u603B\u5DE5\u5177\u8F6E\u6B21\u4E25\u683C\u63A7\u5236\u5728 3 \u8F6E\u4EE5\u5185\uFF09\u3002`,
       "3. \u5BA1\u67E5\u5B8C\u6210\u540E\u7ACB\u5373\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u8BBA\u3002"
     );
   }
@@ -10337,7 +10375,8 @@ ${userAppendPrompt}` : baseReviewContract;
         cwd,
         mode: "json",
         requiredTool: "submit_review",
-        maxRetries: 2,
+        maxRetries: 3,
+        baseDelayMs: 2e3,
         sleepImpl
       });
       agentDurations.push(...durationsMs);

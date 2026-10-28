@@ -181,7 +181,8 @@ export async function executeReviewChunks(params: {
         cwd,
         mode: "json",
         requiredTool: "submit_review",
-        maxRetries: 2,
+        maxRetries: 3,
+        baseDelayMs: 2000,
         sleepImpl,
       });
 
