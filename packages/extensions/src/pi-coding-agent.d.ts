@@ -31,14 +31,16 @@ declare module "@earendil-works/pi-coding-agent" {
   export interface ProviderRefreshContext {
     signal?: AbortSignal;
     credential?: { type?: string; key?: string };
+    allowNetwork?: boolean;
+    force?: boolean;
   }
 
   export interface ProviderConfig {
-    name: string;
+    name?: string;
     baseUrl: string;
     apiKey: string;
-    api: string;
-    models: unknown[];
+    api?: string;
+    models?: unknown[];
     refreshModels?: (context: ProviderRefreshContext) => Promise<unknown[]>;
   }
 

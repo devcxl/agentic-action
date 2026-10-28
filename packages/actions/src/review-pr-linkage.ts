@@ -65,20 +65,20 @@ export function buildReviewPrompt(params: {
     "",
     `审查上下文目录（<CONTEXT_DIR>）位于：\`${contextDir}\``,
     "",
-    `1. 读取 \`${join(contextDir, "REVIEW_CONTEXT.md")}\` 与 \`${join(contextDir, "manifest.json")}\`。`,
+    `1. 先读取 \`${join(contextDir, "REVIEW_CONTEXT.md")}\`（其中已包含文件与对应 \`patches/*.patch\` 路径列表）。`,
   ];
 
   if (chunk) {
     lines.push(
       `2. 本次调用仅负责审查 Chunk #${chunk.index}（共计划 ${plannedChunks ?? 1}/${totalChunks ?? 1} 个分块），包含以下文件：`,
       ...chunk.files.map((f) => `   - \`${f}\``),
-      `3. 逐个读取 \`${join(contextDir, "patches")}\` 中对应上述文件的 patch，对照 \`${join(contextDir, "base")}\` 下的旧版本与工作区中的 head 版本。`,
-      "4. 审查完成后调用 `submit_review` 工具提交本 chunk 的结构化审查结论。",
+      `3. 请在单轮或尽量少的轮次内**并行调用 \`read\`** 读取 \`${join(contextDir, "patches")}\` 中对应上述文件的 patch；仅在确需核实上下文时按需读取 \`${join(contextDir, "base")}\` 或工作区文件（总工具轮次控制在 6 轮以内）。`,
+      "4. 审查完成后立即调用 `submit_review` 工具提交本 chunk 的结构化审查结论。",
     );
   } else {
     lines.push(
-      `2. 按 manifest 的分块顺序审查 \`${join(contextDir, "patches")}\` 中的 patch；需要对照改动前版本时读取 \`${join(contextDir, "base")}\`。`,
-      "3. 审查完成后调用 `submit_review` 工具提交结构化审查结论。",
+      `2. 请在单轮或尽量少的轮次内**并行调用 \`read\`** 读取 \`${join(contextDir, "patches")}\` 中的全部 patch；仅在确需核实上下文时读取 \`${join(contextDir, "base")}\` 或工作区文件（总工具轮次控制在 6 轮以内）。`,
+      "3. 审查完成后立即调用 `submit_review` 工具提交结构化审查结论。",
     );
   }
 

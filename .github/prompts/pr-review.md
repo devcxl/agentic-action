@@ -16,13 +16,12 @@
 
 ## 读取方法（必须遵守）
 
-1. 先读 `<CONTEXT_DIR>/REVIEW_CONTEXT.md` 与 `<CONTEXT_DIR>/manifest.json`，不要一上来就逐个读 patch。
-2. **按指令指定的分块范围推进**：逐个读取对应文件的 patch。
-3. 单个 patch 若超过 read 工具单次上限（manifest 中 `oversized: true`，并给出 `pages`），用 read 的 `offset` / `limit` 分页读取；不要因为文件大就跳过。
-4. **改动前的版本在 `<CONTEXT_DIR>/base/` 目录**：同名文件即 base 版本；重命名/删除的旧路径也在其中（如 `<CONTEXT_DIR>/base/src/old-name.ts`）。直接 read 即可做前后对照，不需要执行 git 命令。
-5. 工作区中的文件就是 PR head 版本，理解上下文时直接 read、grep 或 find 它们。
-6. 严禁执行 `gh pr diff`：超大型 PR 会被 GitHub API 以 406 拒绝。
-7. 被 `skipped` 排除的文件不在本次审查范围内；如你认为某个排除项风险很高，可在 summary 中单独提示，但不要伪造行级结论。
+1. 先读 `<CONTEXT_DIR>/REVIEW_CONTEXT.md`（其中已列出所有待审文件及其 `patches/*.patch` 路径）。
+2. **并行批量读取**：在单轮内尽可能**并行发起多个 `read` 工具调用**一次性读取当前分块的全部 `.patch` 文件，避免一轮只读一个文件。
+3. 单个 patch 若超过 read 工具单次上限（`oversized: true`），用 read 的 `offset` / `limit` 分页读取。
+4. **按需对照上下文**：仅在 patch 上下文不足以判断缺陷时，才定点读取 `<CONTEXT_DIR>/base/` 或工作区中的同名文件。**总工具调用轮数严格控制在 6 轮以内**，读完后立即调用 `submit_review`，不要反复核对行号或通读无关文件。
+5. 严禁执行 `gh pr diff`：超大型 PR 会被 GitHub API 以 406 拒绝。
+6. 被 `skipped` 排除的文件不在本次审查范围内；如你认为某个排除项风险很高，可在 summary 中单独提示，但不要伪造行级结论。
 
 ## 安全边界
 

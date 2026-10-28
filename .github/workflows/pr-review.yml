@@ -62,7 +62,7 @@ jobs:
         with:
           provider: 'half-cabbage'
           model: 'deepseek-v4.1-flash'
-          thinking: 'high'
+          thinking: 'low'
           pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
           max_chunks: ${{ inputs.max_chunks || '0' }}
           link_issues: ${{ inputs.link_issues || 'true' }}

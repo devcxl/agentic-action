@@ -94,7 +94,7 @@ jobs:
         with:
           provider: half-cabbage
           model: deepseek-v4.1-flash
-          thinking: high
+          thinking: low
           audit_mode: ${{ inputs.audit_mode || 'codebase' }}
           target_path: ${{ steps.target.outputs.effective_path }}
           max_chunks: ${{ inputs.max_chunks || '5' }}
