@@ -1,0 +1,292 @@
+name: 'Pi Security Audit Action'
+description: 'Dedicated read-only security audit for third-party codebases, vendor directories, and external PR diffs with supply-chain backdoor detection, trust-boundary verification, and severity gate'
+author: 'agentic-action'
+
+inputs:
+  # --- 模型与 Provider 配置 ---
+  model:
+    description: 'Model identifier (e.g. gpt-4o, claude-3-7-sonnet, minimax-m3, or provider/model)'
+    required: true
+  provider:
+    description: 'Provider name (e.g. half-cabbage, google, openai, anthropic)'
+    required: false
+    default: ''
+  thinking:
+    description: 'Thinking level: off, minimal, low, medium, high, xhigh, max'
+    required: false
+    default: 'high'
+  api_key:
+    description: 'Provider API key (can also be passed via provider-specific env vars)'
+    required: false
+    default: ''
+  env_allow:
+    description: 'Additional comma-separated environment variable names to pass into the Pi subprocess'
+    required: false
+    default: ''
+
+  # --- 审计模式与目标范围 ---
+  audit_mode:
+    description: 'Audit mode: auto (diff when base_sha/PR exists, otherwise full codebase snapshot), codebase (audit all files under target_path), or diff (audit git diff against base_sha)'
+    required: false
+    default: 'auto'
+  target_path:
+    description: 'Relative path of the third-party codebase or directory to audit (default: ".")'
+    required: false
+    default: '.'
+  include:
+    description: 'Optional comma-separated glob patterns to include in the audit'
+    required: false
+    default: ''
+  exclude:
+    description: 'Additional comma-separated glob patterns to exclude from audit'
+    required: false
+    default: ''
+  pr_number:
+    description: 'Optional Pull Request number when running on a PR (defaults to github.event.pull_request.number)'
+    required: false
+    default: ${{ github.event.pull_request.number }}
+  base_sha:
+    description: 'Optional base commit SHA when auditing a diff (defaults to github.event.pull_request.base.sha)'
+    required: false
+    default: ${{ github.event.pull_request.base.sha }}
+  context_dir:
+    description: 'Custom directory path for audit context and artifacts (defaults to RUNNER_TEMP/pi-review-context)'
+    required: false
+    default: ''
+
+  # --- 分块与并发预算 ---
+  max_chunks:
+    description: 'Maximum number of chunks to audit in this run (0 = unlimited)'
+    required: false
+    default: '0'
+  max_chunk_lines:
+    description: 'Max lines per chunk (default: 1500)'
+    required: false
+    default: '1500'
+  max_chunk_bytes:
+    description: 'Max bytes per chunk (default: 40960)'
+    required: false
+    default: '40960'
+  max_file_bytes:
+    description: 'Single file pagination threshold in bytes (default: 409600)'
+    required: false
+    default: '409600'
+  max_files:
+    description: 'Maximum number of files to include in the audit (0 = unlimited)'
+    required: false
+    default: '0'
+  concurrency:
+    description: 'Number of chunks to audit concurrently (default: 2)'
+    required: false
+    default: '2'
+  allow_partial:
+    description: 'Allow partial planned chunk coverage without returning InvalidReport (true/false)'
+    required: false
+    default: 'false'
+
+  # --- 提示词与只读工具约束 ---
+  prompt:
+    description: 'Optional extra security audit instructions (e.g. specific threat model or trust boundaries)'
+    required: false
+    default: ''
+  system_prompt:
+    description: 'Optional system prompt override'
+    required: false
+    default: ''
+  append_system_prompt:
+    description: 'Optional extra system prompt appended after the built-in security audit contract'
+    required: false
+    default: ''
+  context_files:
+    description: 'Optional context files to prepend with @'
+    required: false
+    default: ''
+  tools:
+    description: 'Allowed tools for the security auditor (strictly read-only by default: read,grep,find,ls)'
+    required: false
+    default: 'read,grep,find,ls'
+  exclude_tools:
+    description: 'Comma-separated denylist of tool names to disable'
+    required: false
+    default: ''
+
+  # --- 门禁、回评与报告产物 ---
+  fail_on:
+    description: 'Fail the action when security findings meet or exceed this severity: none, low, medium, high, critical'
+    required: false
+    default: 'high'
+  post_comment:
+    description: 'Publish/update PR comment idempotently when pr_number is available (true/false)'
+    required: false
+    default: 'true'
+  comment_marker:
+    description: 'HTML comment marker name for idempotent security audit PR comments'
+    required: false
+    default: 'pi-security-audit'
+  report_title:
+    description: 'Markdown heading title for the security audit report'
+    required: false
+    default: 'Pi Agent 第三方代码安全审计'
+  upload_artifact:
+    description: 'Upload security audit context and report as workflow artifact (true/false)'
+    required: false
+    default: 'true'
+  artifact_name:
+    description: 'Artifact name when upload_artifact is true'
+    required: false
+    default: 'security-audit-report'
+  github_token:
+    description: 'GitHub token for resolving base SHA and publishing PR comments (never exposed to Pi subprocess)'
+    required: false
+    default: ${{ github.token }}
+  pi_version:
+    description: 'Version of @earendil-works/pi-coding-agent to install (default: 1.4.0, or latest)'
+    required: false
+    default: '1.4.0'
+
+outputs:
+  result:
+    description: 'Rendered security audit Markdown report'
+    value: ${{ steps.audit.outputs.result }}
+  result_file:
+    description: 'Path to the rendered security audit Markdown file'
+    value: ${{ steps.audit.outputs.result_file }}
+  report_file:
+    description: 'Path to the normalized report.json file'
+    value: ${{ steps.audit.outputs.report_file }}
+  comment_file:
+    description: 'Path to the rendered review-comment.md file'
+    value: ${{ steps.audit.outputs.comment_file }}
+  context_dir:
+    description: 'Path to the generated audit context directory'
+    value: ${{ steps.audit.outputs.context_dir }}
+  verdict:
+    description: 'Audit verdict: approve, comment, request_changes, skipped, or error'
+    value: ${{ steps.audit.outputs.verdict }}
+  findings_count:
+    description: 'Total number of security findings in the report'
+    value: ${{ steps.audit.outputs.findings_count }}
+  planned_coverage:
+    description: 'Ratio of audited chunks to planned chunks (0..1)'
+    value: ${{ steps.audit.outputs.planned_coverage }}
+  total_coverage:
+    description: 'Ratio of audited chunks to total chunks (0..1)'
+    value: ${{ steps.audit.outputs.total_coverage }}
+  exit_code:
+    description: 'Exit code of the security audit gate (0 = Ok/skipped, 10 = GateFailed, 20 = InvalidReport, 30 = Infrastructure)'
+    value: ${{ steps.audit.outputs.exit_code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Cache Pi CLI installation
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.pi-cli
+          ~/.npm
+        key: pi-cli-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.pi_version }}
+        restore-keys: |
+          pi-cli-v1-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Install Pi Coding Agent
+      shell: bash
+      env:
+        PI_VERSION: ${{ inputs.pi_version }}
+      run: bash "${{ github.action_path }}/../scripts/setup-pi-cli.sh"
+
+    - name: Setup Pi Configuration and Extensions
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}/..
+      run: |
+        node "${ACTION_PATH}/dist/setup-pi-config.js"
+
+    - name: Run Third-Party Security Audit Pipeline
+      id: audit
+      shell: bash
+      env:
+        ACTION_ROOT: ${{ github.action_path }}/..
+        INPUT_DEFAULT_PROMPT_FILE: .github/prompts/security-audit.md
+        INPUT_AUDIT_MODE: ${{ inputs.audit_mode }}
+        INPUT_TARGET_PATH: ${{ inputs.target_path }}
+        INPUT_INCLUDE: ${{ inputs.include }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_REPORT_TITLE: ${{ inputs.report_title }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_PROVIDER: ${{ inputs.provider }}
+        INPUT_THINKING: ${{ inputs.thinking }}
+        INPUT_API_KEY: ${{ inputs.api_key }}
+        INPUT_ENV_ALLOW: ${{ inputs.env_allow }}
+        INPUT_PR_NUMBER: ${{ inputs.pr_number }}
+        INPUT_BASE_SHA: ${{ inputs.base_sha }}
+        INPUT_CONTEXT_DIR: ${{ inputs.context_dir }}
+        INPUT_MAX_CHUNKS: ${{ inputs.max_chunks }}
+        INPUT_MAX_CHUNK_LINES: ${{ inputs.max_chunk_lines }}
+        INPUT_MAX_CHUNK_BYTES: ${{ inputs.max_chunk_bytes }}
+        INPUT_MAX_FILE_BYTES: ${{ inputs.max_file_bytes }}
+        INPUT_MAX_FILES: ${{ inputs.max_files }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_ALLOW_PARTIAL: ${{ inputs.allow_partial }}
+        INPUT_LINK_ISSUES: 'false'
+        INPUT_INCLUDE_ISSUE_BODY: 'false'
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
+        INPUT_APPEND_SYSTEM_PROMPT: ${{ inputs.append_system_prompt }}
+        INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
+        INPUT_TOOLS: ${{ inputs.tools }}
+        INPUT_EXCLUDE_TOOLS: ${{ inputs.exclude_tools }}
+        INPUT_FAIL_ON: ${{ inputs.fail_on }}
+        INPUT_POST_COMMENT: ${{ inputs.post_comment }}
+        INPUT_COMMENT_MARKER: ${{ inputs.comment_marker }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+      run: |
+        set +e
+        node "${ACTION_ROOT}/dist/review-pr.js"
+        CODE=$?
+        set -e
+        echo "gate_code=${CODE}" >> "$GITHUB_OUTPUT"
+        exit 0
+
+    - name: Upload security audit artifacts
+      if: always() && inputs.upload_artifact == 'true' && steps.audit.outputs.context_dir != ''
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact_name }}
+        path: ${{ steps.audit.outputs.context_dir }}
+        include-hidden-files: true
+        retention-days: 14
+        if-no-files-found: warn
+
+    - name: Enforce security audit gate
+      if: always()
+      shell: bash
+      env:
+        GATE_CODE: ${{ steps.audit.outputs.gate_code }}
+      run: |
+        case "${GATE_CODE:-0}" in
+          0)
+            exit 0
+            ;;
+          10)
+            echo "::error::Security audit gate failed (findings reached fail_on threshold, exit_code=10)"
+            exit 10
+            ;;
+          20)
+            echo "::error::Security audit produced an invalid or incomplete report (exit_code=20)"
+            exit 20
+            ;;
+          30)
+            echo "::error::Security audit encountered an infrastructure error (exit_code=30)"
+            exit 30
+            ;;
+          *)
+            echo "::error::Security audit exited with unexpected status ${GATE_CODE}"
+            exit 30
+            ;;
+        esac

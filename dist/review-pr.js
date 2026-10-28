@@ -8068,11 +8068,7 @@ function validateSubmitReviewInput(raw) {
   if (!summary) {
     throw new Error("submit_review schema \u6821\u9A8C\u5931\u8D25: summary \u4E0D\u80FD\u4E3A\u7A7A");
   }
-  if (obj.verdict !== "approve" && obj.verdict !== "comment" && obj.verdict !== "request_changes") {
-    throw new Error(
-      `submit_review schema \u6821\u9A8C\u5931\u8D25: verdict \u5FC5\u987B\u4E3A approve|comment|request_changes\uFF0C\u5B9E\u9645\u4E3A ${String(obj.verdict)}`
-    );
-  }
+  const verdict = obj.verdict === "approve" || obj.verdict === "comment" || obj.verdict === "request_changes" ? obj.verdict : "comment";
   if (!Array.isArray(obj.findings)) {
     throw new Error("submit_review schema \u6821\u9A8C\u5931\u8D25: findings \u5FC5\u987B\u662F\u6570\u7EC4");
   }
@@ -8089,7 +8085,7 @@ function validateSubmitReviewInput(raw) {
   }
   return {
     summary,
-    verdict: obj.verdict,
+    verdict,
     findings,
     ...filesReviewed !== void 0 ? { files_reviewed: filesReviewed } : {},
     ...typeof obj.notes === "string" ? { notes: obj.notes } : {}
@@ -8538,8 +8534,16 @@ function verifyPrKind(response, confidenceFloor = 0.6) {
 
 // packages/adapters/src/git.ts
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 function execGit(args, options = {}) {
   const cwd = options.cwd ?? process.cwd();
   const env = options.env ?? process.env;
@@ -8841,6 +8845,148 @@ function collectDiffInventory(options) {
     files,
     skipped,
     baseSnapshot,
+    excludes: {
+      defaultsApplied: !noDefaultExcludes,
+      defaultPatterns: [...defaultPatterns],
+      userPatterns: [...userExcludes],
+      includePatterns: [...userIncludes]
+    }
+  };
+}
+var SNAPSHOT_SKIP_DIRS = /* @__PURE__ */ new Set([".git", "node_modules"]);
+function listFilesRecursively(rootDir, currentDir, acc = []) {
+  const stat = lstatSync(currentDir);
+  if (stat.isSymbolicLink()) return acc;
+  if (stat.isFile()) {
+    acc.push(currentDir);
+    return acc;
+  }
+  if (!stat.isDirectory()) return acc;
+  for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
+    const childPath = join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      listFilesRecursively(rootDir, childPath, acc);
+    } else if (entry.isFile()) {
+      acc.push(childPath);
+    }
+  }
+  return acc;
+}
+function collectSnapshotInventory(options) {
+  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const outDir = resolve(repoCwd, options.outDir);
+  const patchDir = join(outDir, "patches");
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const targetAbs = resolve(repoCwd, rawTarget);
+  const relCheck = relative(repoCwd, targetAbs);
+  if (relCheck.startsWith("..") || resolve(repoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
+  }
+  if (!existsSync(targetAbs)) {
+    throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
+  }
+  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
+  const maxFiles = options.maxFiles ?? 0;
+  const userExcludes = options.excludes ?? [];
+  const userIncludes = options.includes ?? [];
+  const noDefaultExcludes = options.noDefaultExcludes ?? false;
+  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
+  const excludeRes = defaultPatterns.map(globToRegExp);
+  const extraExcludeRes = userExcludes.map(globToRegExp);
+  const includeRes = userIncludes.map(globToRegExp);
+  const absFiles = listFilesRecursively(repoCwd, targetAbs);
+  const files = [];
+  const skipped = { excluded: [], binary: [], empty: [] };
+  for (const absPath of absFiles) {
+    const path = relative(repoCwd, absPath).split("\\").join("/");
+    let excludedBy = null;
+    if (includeRes.length > 0 && !matchesAny(path, includeRes)) {
+      excludedBy = "not-in-include-list";
+    } else if (matchesAny(path, excludeRes)) {
+      excludedBy = "matches-exclude";
+    } else if (extraExcludeRes.length > 0 && matchesAny(path, extraExcludeRes)) {
+      excludedBy = "matches-exclude";
+    }
+    if (excludedBy) {
+      skipped.excluded.push({ path, reason: excludedBy });
+      continue;
+    }
+    const buf = readFileSync(absPath);
+    if (buf.length === 0) {
+      skipped.empty.push({ path, reason: "empty-file" });
+      continue;
+    }
+    if (buf.subarray(0, 8192).includes(0)) {
+      skipped.binary.push({ path, reason: "binary" });
+      continue;
+    }
+    const text = buf.toString("utf8");
+    const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
+    files.push({
+      path,
+      oldPath: null,
+      status: "A",
+      added: lineCount,
+      deleted: 0,
+      lines: lineCount,
+      patch: null,
+      bytes: 0,
+      patchLines: 0,
+      oversized: false
+    });
+  }
+  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
+  if (maxFiles > 0 && files.length > maxFiles) {
+    for (const file of files.slice(maxFiles)) {
+      skipped.excluded.push({
+        path: file.path,
+        reason: `over-max-files(${maxFiles})`,
+        added: file.added,
+        deleted: file.deleted
+      });
+    }
+    files.length = maxFiles;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(patchDir, { recursive: true });
+  let index = 0;
+  for (const file of files) {
+    index += 1;
+    const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
+    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const target = join(patchDir, fileName);
+    const text = readFileSync(join(repoCwd, file.path), "utf8");
+    const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+    const patch = `--- /dev/null
++++ b/${file.path}
+@@ -0,0 +1,${bodyLines.length} @@
+` + bodyLines.map((line) => `+${line}`).join("\n") + "\n";
+    const bytes = Buffer.byteLength(patch, "utf8");
+    writeFileSync(target, patch, "utf8");
+    file.patch = `patches/${fileName}`;
+    file.bytes = bytes;
+    file.patchLines = patch.split("\n").length - 1;
+    if (bytes > maxFileBytes) {
+      file.oversized = true;
+      file.pages = Math.ceil(bytes / maxFileBytes);
+      file.note = `patch ${bytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6B21\u8BFB\u53D6\u9884\u7B97 ${maxFileBytes}\uFF0C\u8BF7\u7528 read \u7684 offset/limit \u5206\u9875\u8BFB\u53D6\uFF08\u7EA6 ${file.pages} \u9875\uFF09`;
+      file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
+    }
+  }
+  return {
+    baseSha: "SNAPSHOT",
+    baseInput: rawTarget,
+    headSha: "WORKTREE",
+    headInput: "WORKTREE",
+    mergeBase: "SNAPSHOT",
+    contextLines: 0,
+    filesChangedTotal: absFiles.length,
+    files,
+    skipped,
+    baseSnapshot: null,
     excludes: {
       defaultsApplied: !noDefaultExcludes,
       defaultPatterns: [...defaultPatterns],
@@ -9538,11 +9684,12 @@ function countBySeverity(findings) {
 }
 function renderReviewComment(report, options = {}) {
   const marker = options.marker || "pi-review";
+  const title = options.title || "Pi Agent \u4EE3\u7801\u5BA1\u67E5";
   const maxBytes = options.maxBytes ?? COMMENT_LIMIT - 1024;
   const counts = countBySeverity(report.findings);
   const lines = [];
   lines.push(`<!-- ${marker}:begin -->`);
-  lines.push("## Pi Agent \u4EE3\u7801\u5BA1\u67E5");
+  lines.push(`## ${title}`);
   lines.push("");
   lines.push("| \u7EA7\u522B | \u6570\u91CF |");
   lines.push("| --- | --- |");
@@ -10059,8 +10206,11 @@ async function resolveIssuePrLinkage(params) {
 import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join4 } from "node:path";
 function resolveSubmitReviewExtensionPath(actionRoot) {
-  const candidate = join4(actionRoot, "packages/extensions/src/submit-review.ts");
-  return existsSync4(candidate) ? candidate : void 0;
+  const candidates = [
+    join4(actionRoot, "packages/extensions/src/submit-review.ts"),
+    ...process.env.ACTION_PATH ? [join4(process.env.ACTION_PATH, "packages/extensions/src/submit-review.ts")] : []
+  ];
+  return candidates.find((c) => existsSync4(c));
 }
 function mergeAgentUsages(usages) {
   const merged = createEmptyUsage();
@@ -10093,7 +10243,8 @@ async function executeReviewChunks(params) {
     logger,
     sleepImpl
   } = params;
-  const defaultPromptPath = join4(actionRoot, ".github/prompts/pr-review.md");
+  const defaultPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
+  const defaultPromptPath = join4(actionRoot, defaultPromptRel);
   const baseReviewContract = existsSync4(defaultPromptPath) ? readFileSync4(defaultPromptPath, "utf8") : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt ? `${baseReviewContract}
@@ -10220,7 +10371,14 @@ ${userAppendPrompt}` : baseReviewContract;
 
 // packages/actions/src/review-pr.ts
 var __dirname = dirname3(fileURLToPath(import.meta.url));
-var REPO_ROOT = resolve4(__dirname, "../../..");
+function resolveDefaultActionRoot() {
+  const distParent = resolve4(__dirname, "..");
+  if (existsSync5(join5(distParent, "packages/extensions/src"))) {
+    return distParent;
+  }
+  return resolve4(__dirname, "../../..");
+}
+var REPO_ROOT = resolveDefaultActionRoot();
 function readPrMetadataFromEvent(eventPath) {
   if (!eventPath || !existsSync5(eventPath)) return {};
   try {
@@ -10254,7 +10412,17 @@ async function runPrReview(env = process.env, options = {}) {
   const allowPartial = (env.INPUT_ALLOW_PARTIAL || "false").trim() === "true";
   const postComment = (env.INPUT_POST_COMMENT || "true").trim() === "true";
   const marker = (env.INPUT_COMMENT_MARKER || "pi-review").trim();
+  const reportTitle = (env.INPUT_REPORT_TITLE || "Pi Agent \u4EE3\u7801\u5BA1\u67E5").trim();
+  const auditModeRaw = (env.INPUT_AUDIT_MODE || "diff").trim().toLowerCase();
+  const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  const extraInclude = (env.INPUT_INCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
+  if (targetPath !== "." && targetPath !== "./") {
+    const cleanTarget = targetPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
+    if (cleanTarget) {
+      extraInclude.push(cleanTarget, `${cleanTarget}/**`);
+    }
+  }
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
   const includeIssueBody = (env.INPUT_INCLUDE_ISSUE_BODY ?? "false").trim() === "true";
   const typesafeApiKey = (env.INPUT_TYPESAFE_API_KEY || env.TYPESAFE_API_KEY || "").trim();
@@ -10305,35 +10473,57 @@ async function runPrReview(env = process.env, options = {}) {
     return failInfra(err instanceof Error ? err.message : String(err));
   }
   scrubGitCredentials(cwd);
-  let baseSha;
-  const resolveStart = Date.now();
-  try {
-    baseSha = resolveBaseSha({
-      baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
-      prNumber,
-      cwd,
-      env,
-      githubToken
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
-  }
-  const resolveBaseMs = Date.now() - resolveStart;
-  const diffStart = Date.now();
+  const hasDiffAnchor = Boolean(
+    (env.INPUT_BASE_SHA || eventPr.baseSha || prNumber || "").trim()
+  );
+  const useSnapshotMode = auditModeRaw === "codebase" || auditModeRaw === "auto" && !hasDiffAnchor;
+  let baseSha = "SNAPSHOT";
+  let resolveBaseMs = 0;
   let inventory;
-  try {
-    inventory = collectDiffInventory({
-      cwd,
-      outDir: contextDir,
-      base: baseSha,
-      maxFileBytes,
-      maxFiles,
-      maxSnapshotBytes,
-      excludes: extraExclude,
-      baseSnapshot: true
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
+  const diffStart = Date.now();
+  if (useSnapshotMode) {
+    try {
+      inventory = collectSnapshotInventory({
+        cwd,
+        outDir: contextDir,
+        targetPath,
+        maxFileBytes,
+        maxFiles,
+        excludes: extraExclude,
+        includes: extraInclude
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    const resolveStart = Date.now();
+    try {
+      baseSha = resolveBaseSha({
+        baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
+        prNumber,
+        cwd,
+        env,
+        githubToken
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+    resolveBaseMs = Date.now() - resolveStart;
+    try {
+      inventory = collectDiffInventory({
+        cwd,
+        outDir: contextDir,
+        base: baseSha,
+        maxFileBytes,
+        maxFiles,
+        maxSnapshotBytes,
+        excludes: extraExclude,
+        includes: extraInclude,
+        baseSnapshot: true
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
   }
   const diffMs = Date.now() - diffStart;
   const chunkPlan = planChunks(inventory, { maxChunks, maxChunkLines, maxChunkBytes });
@@ -10461,7 +10651,7 @@ async function runPrReview(env = process.env, options = {}) {
     commentMarkdown = redactText(
       [
         `<!-- ${marker}:begin -->`,
-        "## Pi Agent \u4EE3\u7801\u5BA1\u67E5",
+        `## ${reportTitle}`,
         "",
         "\u672C\u6B21\u8FD0\u884C\u672A\u80FD\u4EA7\u51FA\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u679C\uFF08Agent \u672A\u6309\u5951\u7EA6\u8FD4\u56DE\u6709\u6548\u62A5\u544A\uFF09\u3002",
         "\u8BF7\u67E5\u770B\u672C\u6B21\u8FD0\u884C\u7684\u65E5\u5FD7\u4E0E\u4E0A\u4F20\u7684 artifact\u3002",
@@ -10482,7 +10672,11 @@ async function runPrReview(env = process.env, options = {}) {
 `, secretValues),
       "utf8"
     );
-    commentMarkdown = renderReviewComment(finalReport, { marker, secretValues });
+    commentMarkdown = renderReviewComment(finalReport, {
+      marker,
+      title: reportTitle,
+      secretValues
+    });
     writeFileSync4(commentFile, `${commentMarkdown}
 `, "utf8");
   }
@@ -10491,7 +10685,7 @@ async function runPrReview(env = process.env, options = {}) {
     "text",
     env.GITHUB_STEP_SUMMARY,
     secretValues,
-    "## Pi Agent \u4EE3\u7801\u5BA1\u67E5"
+    `## ${reportTitle}`
   );
   let publishMs;
   if (postComment && prNumber && repo && githubToken && commentMarkdown) {

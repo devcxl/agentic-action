@@ -244,7 +244,7 @@ interface ReviewPlan {
 
 ```
 packages/
-  contracts/src/triage.ts          TriageConfig, Classification, TriageDecision
+  contracts/src/triage.ts          TriageConfig, JevSystemOneResponse, TriageDecision
   core/src/triage/config.ts        配置解析与 §4.1 校验、默认值
   core/src/triage/state.ts         title/body → state（截断、去 HTML 注释）
   core/src/triage/verify.ts        §5

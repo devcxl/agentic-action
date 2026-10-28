@@ -1,8 +1,9 @@
 # Pi Coding Agent Action (v2)
 
-基于 Pi Coding Agent 与 TypeSafe Jev 的 GitHub Composite Action 套件。提供**三入口架构**：
+基于 Pi Coding Agent 与 TypeSafe Jev 的 GitHub Composite Action 套件。提供**四入口架构**：
 - `devcxl/agentic-action`：安全、可验证的**通用 AI Agent 执行器**（显式 `CapabilityPolicy`、环境变量白名单、输出脱敏、二进制缓存）。
 - `devcxl/agentic-action/pr-review`：**超大型 PR 本地比对审查子 Action**（`submit_review` 结构化工具契约、按分块并发审查、双覆盖率统计、Jev Issue/PR 联动、Marker 级幂等回评）。
+- `devcxl/agentic-action/security-audit`：**第三方代码安全审计子 Action**（支持直接对第三方仓库全量快照 `codebase` 或 PR 变更 `diff` 进行只读安全审计，覆盖供应链投毒/后门检测、信任边界漏洞验证与严重级别门禁）。
 - `devcxl/agentic-action/triage`：**基于 TypeSafe Jev（System One 判别式模型）的 Issue 自动分类子 Action**（白名单与校准置信度门限校验、低置信度安全降级、幂等打标）。
 
 > **版本与迁移说明**：
@@ -107,6 +108,45 @@ jobs:
 ```
 
 仓库可通过 `.github/triage.yml` 自定义分类清单与置信度阈值（详见 [Issue 自动分类与联动设计](docs/triage-design.md)）。
+
+### 场景 2.5：第三方代码库 / Vendor 目录安全审计（`security-audit`）
+
+在 `.github/workflows/security-audit.yml` 中引用 `devcxl/agentic-action/security-audit@main`，可直接审计检出的第三方仓库全量代码（`audit_mode: codebase`，无需 `base_sha` 或 PR）或审计 PR 中的第三方依赖变更（`audit_mode: diff`）：
+
+```yaml
+name: Third-Party Security Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'External GitHub repository to audit (e.g. owner/repo)'
+        required: true
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout third-party repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          path: third-party-target
+          persist-credentials: false
+
+      - name: Run Pi Third-Party Security Audit
+        uses: devcxl/agentic-action/security-audit@main
+        with:
+          provider: 'half-cabbage'
+          model: 'minimax-m3'
+          thinking: 'high'
+          audit_mode: 'codebase'
+          target_path: 'third-party-target'
+          fail_on: 'high'
+        env:
+          HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
+          HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
+```
 
 ### 场景 3：通用代码库分析与结构化 Output 消费
 

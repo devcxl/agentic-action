@@ -30,8 +30,13 @@ import {
 } from "./review-pr-linkage.ts";
 
 function resolveSubmitReviewExtensionPath(actionRoot: string): string | undefined {
-  const candidate = join(actionRoot, "packages/extensions/src/submit-review.ts");
-  return existsSync(candidate) ? candidate : undefined;
+  const candidates = [
+    join(actionRoot, "packages/extensions/src/submit-review.ts"),
+    ...(process.env.ACTION_PATH
+      ? [join(process.env.ACTION_PATH, "packages/extensions/src/submit-review.ts")]
+      : []),
+  ];
+  return candidates.find((c) => existsSync(c));
 }
 
 export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
@@ -87,7 +92,9 @@ export async function executeReviewChunks(params: {
     sleepImpl,
   } = params;
 
-  const defaultPromptPath = join(actionRoot, ".github/prompts/pr-review.md");
+  const defaultPromptRel =
+    (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
+  const defaultPromptPath = join(actionRoot, defaultPromptRel);
   const baseReviewContract = existsSync(defaultPromptPath)
     ? readFileSync(defaultPromptPath, "utf8")
     : BUILTIN_REVIEW_SYSTEM_PROMPT;

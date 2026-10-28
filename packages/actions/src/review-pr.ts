@@ -20,6 +20,7 @@ import {
 } from "@agentic-action/core";
 import {
   collectDiffInventory,
+  collectSnapshotInventory,
   createLogger,
   materializeReviewContext,
   renderReviewComment,
@@ -37,7 +38,14 @@ import { executeReviewChunks } from "./review-pr-runner.ts";
 export { buildReviewPrompt } from "./review-pr-linkage.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "../../..");
+function resolveDefaultActionRoot(): string {
+  const distParent = resolve(__dirname, "..");
+  if (existsSync(join(distParent, "packages/extensions/src"))) {
+    return distParent;
+  }
+  return resolve(__dirname, "../../..");
+}
+const REPO_ROOT = resolveDefaultActionRoot();
 
 function readPrMetadataFromEvent(eventPath?: string): {
   prNumber?: string;
@@ -95,10 +103,23 @@ export async function runPrReview(
   const allowPartial = (env.INPUT_ALLOW_PARTIAL || "false").trim() === "true";
   const postComment = (env.INPUT_POST_COMMENT || "true").trim() === "true";
   const marker = (env.INPUT_COMMENT_MARKER || "pi-review").trim();
+  const reportTitle = (env.INPUT_REPORT_TITLE || "Pi Agent 代码审查").trim();
+  const auditModeRaw = (env.INPUT_AUDIT_MODE || "diff").trim().toLowerCase();
+  const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "")
     .split(/[,\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
+  const extraInclude = (env.INPUT_INCLUDE || "")
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (targetPath !== "." && targetPath !== "./") {
+    const cleanTarget = targetPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
+    if (cleanTarget) {
+      extraInclude.push(cleanTarget, `${cleanTarget}/**`);
+    }
+  }
 
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
   const includeIssueBody = (env.INPUT_INCLUDE_ISSUE_BODY ?? "false").trim() === "true";
@@ -167,36 +188,61 @@ export async function runPrReview(
 
   scrubGitCredentials(cwd);
 
-  let baseSha: string;
-  const resolveStart = Date.now();
-  try {
-    baseSha = resolveBaseSha({
-      baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
-      prNumber,
-      cwd,
-      env,
-      githubToken,
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
-  }
-  const resolveBaseMs = Date.now() - resolveStart;
+  const hasDiffAnchor = Boolean(
+    (env.INPUT_BASE_SHA || eventPr.baseSha || prNumber || "").trim(),
+  );
+  const useSnapshotMode =
+    auditModeRaw === "codebase" || (auditModeRaw === "auto" && !hasDiffAnchor);
 
-  const diffStart = Date.now();
+  let baseSha = "SNAPSHOT";
+  let resolveBaseMs = 0;
   let inventory;
-  try {
-    inventory = collectDiffInventory({
-      cwd,
-      outDir: contextDir,
-      base: baseSha,
-      maxFileBytes,
-      maxFiles,
-      maxSnapshotBytes,
-      excludes: extraExclude,
-      baseSnapshot: true,
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
+  const diffStart = Date.now();
+
+  if (useSnapshotMode) {
+    try {
+      inventory = collectSnapshotInventory({
+        cwd,
+        outDir: contextDir,
+        targetPath,
+        maxFileBytes,
+        maxFiles,
+        excludes: extraExclude,
+        includes: extraInclude,
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    const resolveStart = Date.now();
+    try {
+      baseSha = resolveBaseSha({
+        baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
+        prNumber,
+        cwd,
+        env,
+        githubToken,
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+    resolveBaseMs = Date.now() - resolveStart;
+
+    try {
+      inventory = collectDiffInventory({
+        cwd,
+        outDir: contextDir,
+        base: baseSha,
+        maxFileBytes,
+        maxFiles,
+        maxSnapshotBytes,
+        excludes: extraExclude,
+        includes: extraInclude,
+        baseSnapshot: true,
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
   }
   const diffMs = Date.now() - diffStart;
 
@@ -337,7 +383,7 @@ export async function runPrReview(
     commentMarkdown = redactText(
       [
         `<!-- ${marker}:begin -->`,
-        "## Pi Agent 代码审查",
+        `## ${reportTitle}`,
         "",
         "本次运行未能产出结构化审查结果（Agent 未按契约返回有效报告）。",
         "请查看本次运行的日志与上传的 artifact。",
@@ -357,7 +403,11 @@ export async function runPrReview(
       redactText(`${JSON.stringify(finalReport, null, 2)}\n`, secretValues),
       "utf8",
     );
-    commentMarkdown = renderReviewComment(finalReport, { marker, secretValues });
+    commentMarkdown = renderReviewComment(finalReport, {
+      marker,
+      title: reportTitle,
+      secretValues,
+    });
     writeFileSync(commentFile, `${commentMarkdown}\n`, "utf8");
   }
 
@@ -366,7 +416,7 @@ export async function runPrReview(
     "text",
     env.GITHUB_STEP_SUMMARY,
     secretValues,
-    "## Pi Agent 代码审查",
+    `## ${reportTitle}`,
   );
 
   let publishMs: number | undefined;

@@ -44,17 +44,19 @@ export function renderReviewComment(
   report: ReviewReport,
   options: {
     marker?: string;
+    title?: string;
     maxBytes?: number;
     secretValues?: readonly string[];
   } = {},
 ): string {
   const marker = options.marker || "pi-review";
+  const title = options.title || "Pi Agent 代码审查";
   const maxBytes = options.maxBytes ?? COMMENT_LIMIT - 1024;
   const counts = countBySeverity(report.findings);
   const lines: string[] = [];
 
   lines.push(`<!-- ${marker}:begin -->`);
-  lines.push("## Pi Agent 代码审查");
+  lines.push(`## ${title}`);
   lines.push("");
   lines.push("| 级别 | 数量 |");
   lines.push("| --- | --- |");

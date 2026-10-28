@@ -63,7 +63,7 @@ function getStoredAuth(): { key?: string; baseUrl?: string } {
 async function fetchModelIds(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    signal,
+    signal: signal ?? AbortSignal.timeout(10_000),
   });
 
   if (!response.ok) {

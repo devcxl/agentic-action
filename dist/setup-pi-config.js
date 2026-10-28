@@ -15,7 +15,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 function setupPiConfig(options = {}) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const actionPath = options.actionPath || process.env.ACTION_PATH || resolve(__dirname, "../../..");
+  const distParent = resolve(__dirname, "..");
+  const defaultActionPath = existsSync(join(distParent, "packages/extensions/src")) ? distParent : resolve(__dirname, "../../..");
+  const actionPath = options.actionPath || process.env.ACTION_PATH || defaultActionPath;
   const agentDir = options.agentDir || process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
   const extTargetDir = join(agentDir, "extensions");
   mkdirSync(extTargetDir, { recursive: true });
@@ -57,7 +59,9 @@ function setupPiConfig(options = {}) {
       if (entry.name.endsWith(".d.ts") || entry.name === "index.ts" || entry.name === "submit-review.ts") {
         continue;
       }
-      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js") && !entry.name.endsWith(".mjs")) {
+        continue;
+      }
       copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);
     }

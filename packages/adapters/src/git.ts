@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
 import type {
   BaseSnapshotInfo,
   DiffFileEntry,
@@ -400,6 +408,188 @@ export function collectDiffInventory(
     files,
     skipped,
     baseSnapshot,
+    excludes: {
+      defaultsApplied: !noDefaultExcludes,
+      defaultPatterns: [...defaultPatterns],
+      userPatterns: [...userExcludes],
+      includePatterns: [...userIncludes],
+    },
+  };
+}
+
+export interface CollectSnapshotOptions {
+  cwd?: string;
+  outDir: string;
+  targetPath?: string;
+  maxFileBytes?: number;
+  maxFiles?: number;
+  excludes?: string[];
+  includes?: string[];
+  noDefaultExcludes?: boolean;
+}
+
+const SNAPSHOT_SKIP_DIRS = new Set([".git", "node_modules"]);
+
+function listFilesRecursively(
+  rootDir: string,
+  currentDir: string,
+  acc: string[] = [],
+): string[] {
+  const stat = lstatSync(currentDir);
+  if (stat.isSymbolicLink()) return acc;
+  if (stat.isFile()) {
+    acc.push(currentDir);
+    return acc;
+  }
+  if (!stat.isDirectory()) return acc;
+
+  for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+    if (entry.isSymbolicLink()) continue;
+    if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
+    const childPath = join(currentDir, entry.name);
+    if (entry.isDirectory()) {
+      listFilesRecursively(rootDir, childPath, acc);
+    } else if (entry.isFile()) {
+      acc.push(childPath);
+    }
+  }
+  return acc;
+}
+
+/**
+ * Collect a codebase/directory snapshot as a synthetic `DiffInventory`
+ * so `security-audit` can audit third-party repositories, vendor directories,
+ * or extracted archives without requiring a base git commit or PR diff.
+ */
+export function collectSnapshotInventory(
+  options: CollectSnapshotOptions,
+): DiffInventory {
+  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const outDir = resolve(repoCwd, options.outDir);
+  const patchDir = join(outDir, "patches");
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const targetAbs = resolve(repoCwd, rawTarget);
+  const relCheck = relative(repoCwd, targetAbs);
+  if (relCheck.startsWith("..") || resolve(repoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
+  }
+  if (!existsSync(targetAbs)) {
+    throw new Error(`target_path 不存在: ${rawTarget}`);
+  }
+
+  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
+  const maxFiles = options.maxFiles ?? 0;
+  const userExcludes = options.excludes ?? [];
+  const userIncludes = options.includes ?? [];
+  const noDefaultExcludes = options.noDefaultExcludes ?? false;
+
+  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
+  const excludeRes = defaultPatterns.map(globToRegExp);
+  const extraExcludeRes = userExcludes.map(globToRegExp);
+  const includeRes = userIncludes.map(globToRegExp);
+
+  const absFiles = listFilesRecursively(repoCwd, targetAbs);
+  const files: DiffFileEntry[] = [];
+  const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
+
+  for (const absPath of absFiles) {
+    const path = relative(repoCwd, absPath).split("\\").join("/");
+    let excludedBy: string | null = null;
+    if (includeRes.length > 0 && !matchesAny(path, includeRes)) {
+      excludedBy = "not-in-include-list";
+    } else if (matchesAny(path, excludeRes)) {
+      excludedBy = "matches-exclude";
+    } else if (extraExcludeRes.length > 0 && matchesAny(path, extraExcludeRes)) {
+      excludedBy = "matches-exclude";
+    }
+    if (excludedBy) {
+      skipped.excluded.push({ path, reason: excludedBy });
+      continue;
+    }
+
+    const buf = readFileSync(absPath);
+    if (buf.length === 0) {
+      skipped.empty.push({ path, reason: "empty-file" });
+      continue;
+    }
+    if (buf.subarray(0, 8192).includes(0)) {
+      skipped.binary.push({ path, reason: "binary" });
+      continue;
+    }
+
+    const text = buf.toString("utf8");
+    const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
+    files.push({
+      path,
+      oldPath: null,
+      status: "A",
+      added: lineCount,
+      deleted: 0,
+      lines: lineCount,
+      patch: null,
+      bytes: 0,
+      patchLines: 0,
+      oversized: false,
+    });
+  }
+
+  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
+  if (maxFiles > 0 && files.length > maxFiles) {
+    for (const file of files.slice(maxFiles)) {
+      skipped.excluded.push({
+        path: file.path,
+        reason: `over-max-files(${maxFiles})`,
+        added: file.added,
+        deleted: file.deleted,
+      });
+    }
+    files.length = maxFiles;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(patchDir, { recursive: true });
+
+  let index = 0;
+  for (const file of files) {
+    index += 1;
+    const safeName = file.path
+      .replace(/[^A-Za-z0-9._-]+/g, "__")
+      .slice(-120);
+    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const target = join(patchDir, fileName);
+
+    const text = readFileSync(join(repoCwd, file.path), "utf8");
+    const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+    const patch =
+      `--- /dev/null\n+++ b/${file.path}\n@@ -0,0 +1,${bodyLines.length} @@\n` +
+      bodyLines.map((line) => `+${line}`).join("\n") +
+      "\n";
+
+    const bytes = Buffer.byteLength(patch, "utf8");
+    writeFileSync(target, patch, "utf8");
+    file.patch = `patches/${fileName}`;
+    file.bytes = bytes;
+    file.patchLines = patch.split("\n").length - 1;
+    if (bytes > maxFileBytes) {
+      file.oversized = true;
+      file.pages = Math.ceil(bytes / maxFileBytes);
+      file.note = `patch ${bytes} 字节，超过单次读取预算 ${maxFileBytes}，请用 read 的 offset/limit 分页读取（约 ${file.pages} 页）`;
+      file.readVia = `read ${file.patch} （分 ${file.pages} 页，用 offset/limit 逐页读）`;
+    }
+  }
+
+  return {
+    baseSha: "SNAPSHOT",
+    baseInput: rawTarget,
+    headSha: "WORKTREE",
+    headInput: "WORKTREE",
+    mergeBase: "SNAPSHOT",
+    contextLines: 0,
+    filesChangedTotal: absFiles.length,
+    files,
+    skipped,
+    baseSnapshot: null,
     excludes: {
       defaultsApplied: !noDefaultExcludes,
       defaultPatterns: [...defaultPatterns],
