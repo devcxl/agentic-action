@@ -1,5 +1,5 @@
 name: 'Pi PR Review Action'
-description: 'Local git merge-base diff review for large PRs with read-only sandbox, structured JSON report, marker-idempotent PR comment, and severity gate'
+description: 'Local git merge-base diff review for large PRs with read-only sandbox, submit_review structured contract, Jev issue linkage, marker-idempotent PR comment, and severity gate'
 author: 'agentic-action'
 
 inputs:
@@ -19,6 +19,10 @@ inputs:
     description: 'Provider API key (can also be passed via provider-specific env vars)'
     required: false
     default: ''
+  env_allow:
+    description: 'Additional comma-separated environment variable names to pass into the Pi subprocess'
+    required: false
+    default: ''
 
   # --- PR 与比对预算配置 ---
   pr_number:
@@ -29,6 +33,10 @@ inputs:
     description: 'Base commit SHA or ref (defaults to github.event.pull_request.base.sha or queried via gh)'
     required: false
     default: ${{ github.event.pull_request.base.sha }}
+  context_dir:
+    description: 'Custom directory path for review context and artifacts (defaults to RUNNER_TEMP/pi-review-context)'
+    required: false
+    default: ''
   max_chunks:
     description: 'Maximum number of diff chunks to review in this run (0 = unlimited)'
     required: false
@@ -45,10 +53,36 @@ inputs:
     description: 'Single file patch pagination threshold in bytes (default: 409600)'
     required: false
     default: '409600'
+  concurrency:
+    description: 'Number of chunks to review concurrently (default: 2)'
+    required: false
+    default: '2'
+  allow_partial:
+    description: 'Allow partial planned chunk coverage without returning InvalidReport (true/false)'
+    required: false
+    default: 'false'
   exclude:
     description: 'Additional comma-separated glob patterns to exclude from review'
     required: false
     default: ''
+
+  # --- Issue / PR 联动（TypeSafe Jev） ---
+  link_issues:
+    description: 'Link closing issues and PR classification into review policy (true/false)'
+    required: false
+    default: 'true'
+  include_issue_body:
+    description: 'Materialize linked issue bodies as untrusted files in contextDir/linked-issues (true/false)'
+    required: false
+    default: 'false'
+  typesafe_api_key:
+    description: 'TypeSafe API key for Jev classification (never exposed to Pi subprocess)'
+    required: false
+    default: ''
+  triage_config:
+    description: 'Path to triage configuration file (default: .github/triage.yml)'
+    required: false
+    default: '.github/triage.yml'
 
   # --- 提示词与工具定制 ---
   prompt:
@@ -128,8 +162,14 @@ outputs:
   findings_count:
     description: 'Total number of findings in the report'
     value: ${{ steps.review.outputs.findings_count }}
+  planned_coverage:
+    description: 'Ratio of reviewed chunks to planned chunks (0..1)'
+    value: ${{ steps.review.outputs.planned_coverage }}
+  total_coverage:
+    description: 'Ratio of reviewed chunks to total PR chunks (0..1)'
+    value: ${{ steps.review.outputs.total_coverage }}
   exit_code:
-    description: 'Exit code of the review gate (0 = passed/skipped, 1 = fail_on hit, 2 = invalid report)'
+    description: 'Exit code of the review gate (0 = Ok/skipped, 10 = GateFailed, 20 = InvalidReport, 30 = Infrastructure)'
     value: ${{ steps.review.outputs.exit_code }}
 
 runs:
@@ -154,29 +194,14 @@ runs:
       shell: bash
       env:
         PI_VERSION: ${{ inputs.pi_version }}
-      run: |
-        export PATH="$HOME/.pi-cli/bin:$PATH"
-        echo "$HOME/.pi-cli/bin" >> "$GITHUB_PATH"
-        if [ -x "$HOME/.pi-cli/bin/pi" ]; then
-          INSTALLED_VER=$("$HOME/.pi-cli/bin/pi" --version 2>/dev/null || true)
-          if [ "$PI_VERSION" != "latest" ] && [ "$INSTALLED_VER" = "$PI_VERSION" ]; then
-            echo "Using cached Pi CLI v${INSTALLED_VER}"
-            exit 0
-          fi
-        fi
-        if command -v pi >/dev/null 2>&1 && [ "$PI_VERSION" = "latest" ]; then
-          echo "Using pre-installed Pi CLI $(pi --version 2>/dev/null || true)"
-          exit 0
-        fi
-        mkdir -p "$HOME/.pi-cli"
-        npm install -g --prefix "$HOME/.pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
+      run: bash "${{ github.action_path }}/../scripts/setup-pi-cli.sh"
 
     - name: Setup Pi Configuration and Extensions
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}/..
       run: |
-        node "${ACTION_PATH}/scripts/setup-pi-config.mjs"
+        node "${ACTION_PATH}/dist/setup-pi-config.js"
 
     - name: Run PR Review Pipeline
       id: review
@@ -187,13 +212,21 @@ runs:
         INPUT_PROVIDER: ${{ inputs.provider }}
         INPUT_THINKING: ${{ inputs.thinking }}
         INPUT_API_KEY: ${{ inputs.api_key }}
+        INPUT_ENV_ALLOW: ${{ inputs.env_allow }}
         INPUT_PR_NUMBER: ${{ inputs.pr_number }}
         INPUT_BASE_SHA: ${{ inputs.base_sha }}
+        INPUT_CONTEXT_DIR: ${{ inputs.context_dir }}
         INPUT_MAX_CHUNKS: ${{ inputs.max_chunks }}
         INPUT_MAX_CHUNK_LINES: ${{ inputs.max_chunk_lines }}
         INPUT_MAX_CHUNK_BYTES: ${{ inputs.max_chunk_bytes }}
         INPUT_MAX_FILE_BYTES: ${{ inputs.max_file_bytes }}
+        INPUT_CONCURRENCY: ${{ inputs.concurrency }}
+        INPUT_ALLOW_PARTIAL: ${{ inputs.allow_partial }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_LINK_ISSUES: ${{ inputs.link_issues }}
+        INPUT_INCLUDE_ISSUE_BODY: ${{ inputs.include_issue_body }}
+        INPUT_TYPESAFE_API_KEY: ${{ inputs.typesafe_api_key }}
+        INPUT_TRIAGE_CONFIG: ${{ inputs.triage_config }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
         INPUT_APPEND_SYSTEM_PROMPT: ${{ inputs.append_system_prompt }}
@@ -204,10 +237,9 @@ runs:
         INPUT_POST_COMMENT: ${{ inputs.post_comment }}
         INPUT_COMMENT_MARKER: ${{ inputs.comment_marker }}
         INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
-        GH_TOKEN: ${{ inputs.github_token }}
       run: |
         set +e
-        node "${ACTION_ROOT}/scripts/pr-review/run-review.mjs"
+        node "${ACTION_ROOT}/dist/review-pr.js"
         CODE=$?
         set -e
         echo "gate_code=${CODE}" >> "$GITHUB_OUTPUT"
@@ -228,6 +260,24 @@ runs:
       env:
         GATE_CODE: ${{ steps.review.outputs.gate_code }}
       run: |
-        if [ "${GATE_CODE:-0}" -ne 0 ]; then
-          exit "${GATE_CODE}"
-        fi
+        case "${GATE_CODE:-0}" in
+          0)
+            exit 0
+            ;;
+          10)
+            echo "::error::PR review gate failed (findings reached fail_on threshold, exit_code=10)"
+            exit 10
+            ;;
+          20)
+            echo "::error::PR review produced an invalid or incomplete report (exit_code=20)"
+            exit 20
+            ;;
+          30)
+            echo "::error::PR review encountered an infrastructure error (exit_code=30)"
+            exit 30
+            ;;
+          *)
+            echo "::error::PR review exited with unexpected status ${GATE_CODE}"
+            exit 30
+            ;;
+        esac

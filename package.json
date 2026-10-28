@@ -1,0 +1,22 @@
+{
+  "name": "@agentic-action",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi Coding Agent GitHub Action Suite (v2)",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "node scripts/build-dist.mjs",
+    "build:check": "node scripts/build-dist.mjs --check"
+  },
+  "dependencies": {
+    "@sinclair/typebox": "^0.34.0",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/node": ">=22.0.0",
+    "typescript": ">=5.0.0",
+    "vitest": ">=3.0.0"
+  }
+}

@@ -2,7 +2,7 @@
 
 本文是 [architecture-v2.md](./architecture-v2.md) 的增量设计：引入 TypeSafe 的 **Jev**（System One 判别式模型）做 Issue 类型分类，并把分类结果作为 PR 审查（pi）的路由输入。
 
-状态：设计稿，未实现。实现排期见 [§9](#9-排期与验收)。
+状态：已实现（v2.0.0）。排期与验收矩阵见 [§9](#9-排期与验收)。
 
 ---
 
@@ -165,7 +165,7 @@ type TriageDecision =
 
 ### 6.1 Executor（`adapters/github`）
 
-- 只有 `issue-triage` 的写步骤持有 `issues: write`；整个 job 不检出代码。
+- 只有 `triage` 的写步骤持有 `issues: write`；整个 job 不检出代码。
 - 幂等：Issue 已带有任一配置中的类型标签（含 `fallback` 标签）时**跳过**，人工设置优先。
 - 只在 `opened` 触发；不响应 `edited`、`labeled`，避免标签抖动与循环触发。
 - 只增加一个标签，不删除任何已有标签。
@@ -252,7 +252,7 @@ packages/
   adapters/src/typesafe.ts         fetch、超时、退避、响应 schema 校验
   adapters/src/github.ts           新增：labels 读写、linked issues（T2 仅读）
   actions/src/triage-issue.ts      入口装配
-issue-triage/action.yml            新子 action
+triage/action.yml                  新子 action
 ```
 
 边界约束：
@@ -267,7 +267,7 @@ issue-triage/action.yml            新子 action
 
 | 阶段 | 内容 | 依赖 | 验收 |
 | --- | --- | --- | --- |
-| T1 Issue 分类 | `contracts/triage`、`core/triage/*`、`adapters/typesafe`、labels 读写、`issue-triage` action | P0（workspace、tsc、vitest）；可与 P1、P2 并行 | 见下 |
+| T1 Issue 分类 | `contracts/triage`、`core/triage/*`、`adapters/typesafe`、labels 读写、`triage` action | P0（workspace、tsc、vitest）；可与 P1、P2 并行 | 见下 |
 | T2 联动 | `core/review/policy`、linked issues 读取、PR 分类、`pr-review` 新输入 | P3（审查管线）；接在 budget 之前，只影响 focus 与 thinking，不改 chunk 规划 | 见下 |
 
 T1 验收（均用假 Jev 服务器，不访问真实 API）：

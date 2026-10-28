@@ -1,0 +1,89 @@
+name: 'Pi Issue Triage Action (TypeSafe Jev)'
+description: 'Zero-shot issue classification powered by TypeSafe Jev System One model with whitelist & confidence verification and idempotent GitHub labeling'
+author: 'agentic-action'
+
+inputs:
+  issue_number:
+    description: 'Issue number to classify (defaults to github.event.issue.number)'
+    required: false
+    default: ${{ github.event.issue.number }}
+  issue_title:
+    description: 'Optional issue title override (defaults to github.event.issue.title)'
+    required: false
+    default: ''
+  issue_body:
+    description: 'Optional issue body override (defaults to github.event.issue.body)'
+    required: false
+    default: ''
+  triage_config:
+    description: 'Path to triage configuration YAML or inline YAML (default: .github/triage.yml)'
+    required: false
+    default: '.github/triage.yml'
+  typesafe_api_key:
+    description: 'TypeSafe API Key for Jev System One endpoint'
+    required: false
+    default: ''
+  typesafe_base_url:
+    description: 'TypeSafe API base URL (default: https://api.typesafe.ai)'
+    required: false
+    default: 'https://api.typesafe.ai'
+  apply_label:
+    description: 'Whether to apply the verified label to the GitHub issue idempotently (true/false)'
+    required: false
+    default: 'true'
+  github_token:
+    description: 'GitHub token with issues:write permission for applying labels'
+    required: false
+    default: ${{ github.token }}
+  write_summary:
+    description: 'Whether to append classification details to GITHUB_STEP_SUMMARY (true/false)'
+    required: false
+    default: 'true'
+
+outputs:
+  type:
+    description: 'Classified issue type key (or fallback key when degraded)'
+    value: ${{ steps.triage.outputs.type }}
+  label:
+    description: 'Target GitHub label selected by Verifier'
+    value: ${{ steps.triage.outputs.label }}
+  confidence:
+    description: 'Calibrated confidence score from Jev (0..1)'
+    value: ${{ steps.triage.outputs.confidence }}
+  verdict:
+    description: 'Triage verdict: accepted, degraded, skipped_existing, invalid, or error'
+    value: ${{ steps.triage.outputs.verdict }}
+  applied:
+    description: 'Whether a label was newly applied to the issue (true/false)'
+    value: ${{ steps.triage.outputs.applied }}
+  result_file:
+    description: 'Path to the generated result.json envelope'
+    value: ${{ steps.triage.outputs.result_file }}
+  exit_code:
+    description: 'Exit code (0 = Ok/degraded/skipped, 20 = InvalidReport, 30 = Infrastructure)'
+    value: ${{ steps.triage.outputs.exit_code }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 22
+
+    - name: Run Jev Issue Triage
+      id: triage
+      shell: bash
+      env:
+        ACTION_ROOT: ${{ github.action_path }}/..
+        INPUT_ISSUE_NUMBER: ${{ inputs.issue_number }}
+        INPUT_ISSUE_TITLE: ${{ inputs.issue_title }}
+        INPUT_ISSUE_BODY: ${{ inputs.issue_body }}
+        INPUT_TRIAGE_CONFIG: ${{ inputs.triage_config }}
+        INPUT_TYPESAFE_API_KEY: ${{ inputs.typesafe_api_key }}
+        INPUT_TYPESAFE_BASE_URL: ${{ inputs.typesafe_base_url }}
+        INPUT_APPLY_LABEL: ${{ inputs.apply_label }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
+        INPUT_WRITE_SUMMARY: ${{ inputs.write_summary }}
+      run: |
+        node "${ACTION_ROOT}/dist/triage-issue.js"

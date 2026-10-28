@@ -1,13 +1,13 @@
-# 超大型 PR 的本地比对审查工作流
+# 超大型 PR 的本地比对审查工作流 (v2)
 #
 # 在其他仓库中使用时，无需复制任何脚本或提示词文件，直接引用：
 #   uses: devcxl/agentic-action/pr-review@main
 #
 # 安全与设计特性：
-#   1. fetch-depth: 0 全量检出，在 Runner 本地基于 git merge-base 生成分块上下文，绕开 GitHub diff API 20000 行上限。
+#   1. fetch-depth: 0 + persist-credentials: false 检出，在 Runner 本地基于 git merge-base 生成分块上下文，并自动擦除 .git/config 残留凭证。
 #   2. 审查上下文与 base 快照生成在 ${RUNNER_TEMP}/pi-review-context，不污染工作区，不干扰 Agent 的 grep/find。
-#   3. Agent 运行在纯只读工具集（read,grep,find,ls）下，且子进程自动剥离 GH_TOKEN，杜绝提示词注入篡改文件或窃取凭证。
-#   4. 基于 HTML Marker（<!-- pi-review:begin -->）通过 GitHub API 精确查找并幂等更新评论，不会误覆盖其他 bot 的评论。
+#   3. Agent 运行在 --no-approve --no-mcp 与纯只读工具集（read,grep,find,ls,submit_review）下，子进程采用严格环境变量白名单。
+#   4. 基于 HTML Marker（<!-- pi-review:begin -->）通过 GitHub API 完整分页查找并幂等更新评论。
 
 name: PR Review (large diff)
 
@@ -30,6 +30,7 @@ concurrency:
 
 permissions:
   contents: read
+  issues: read
   pull-requests: write
 
 jobs:
@@ -39,11 +40,12 @@ jobs:
     timeout-minutes: 90
 
     steps:
-      - name: Checkout PR head (full history)
+      - name: Checkout PR head (full history, no persisted credentials)
         uses: actions/checkout@v4
         with:
           ref: refs/pull/${{ github.event.pull_request.number || inputs.pr_number }}/head
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Run Pi PR Review
         uses: ./pr-review
@@ -56,7 +58,7 @@ jobs:
           exclude: '**/dist/**,**/vendor/**'
           fail_on: 'high'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          typesafe_api_key: ${{ secrets.TYPESAFE_API_KEY }}
         env:
           HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
           HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
-          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}

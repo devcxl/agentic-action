@@ -176,24 +176,28 @@ export default function ciLoggerExtension(pi: ExtensionAPI): void {
 
   pi.on("tool_execution_start", (event, ctx) => {
     if (!isEnabled(ctx)) return;
-    const summary = formatArgsSummary(event.toolName, event.args);
-    if (event.toolCallId) {
-      toolArgsByCallId.set(event.toolCallId, summary);
+    const toolName = typeof event.toolName === "string" ? event.toolName : "";
+    const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+    const summary = formatArgsSummary(toolName, event.args);
+    if (toolCallId) {
+      toolArgsByCallId.set(toolCallId, summary);
     }
-    const label = summary ? `${event.toolName} ${summary}` : event.toolName;
+    const label = summary ? `${toolName} ${summary}` : toolName;
     writeLine(`[Turn ${turnCount}] -> ${label}`);
   });
 
   pi.on("tool_execution_end", (event, ctx) => {
     if (!isEnabled(ctx)) return;
-    const summary = (event.toolCallId ? toolArgsByCallId.get(event.toolCallId) : undefined) ?? "";
-    if (event.toolCallId) {
-      toolArgsByCallId.delete(event.toolCallId);
+    const toolName = typeof event.toolName === "string" ? event.toolName : "";
+    const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+    const summary = (toolCallId ? toolArgsByCallId.get(toolCallId) : undefined) ?? "";
+    if (toolCallId) {
+      toolArgsByCallId.delete(toolCallId);
     }
     const duration = typeof event.durationMs === "number" ? ` (${Math.round(event.durationMs)}ms)` : "";
     const status = event.isError ? "ERROR" : "OK";
     const errorPreview = event.isError ? extractToolErrorPreview(event.result) : "";
-    const target = summary ? `${event.toolName} ${summary}` : event.toolName;
+    const target = summary ? `${toolName} ${summary}` : toolName;
     writeLine(`[Turn ${turnCount}] <- ${target} [${status}]${duration}${errorPreview}`);
   });
 

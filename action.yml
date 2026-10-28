@@ -1,5 +1,5 @@
 name: 'Pi Coding Agent Action'
-description: 'Automated AI workflows and code tasks powered by Pi Coding Agent with full parameterization'
+description: 'Automated AI workflows and code tasks powered by Pi Coding Agent with capability policy isolation'
 author: 'agentic-action'
 
 inputs:
@@ -41,7 +41,7 @@ inputs:
     required: false
     default: ''
 
-  # --- 工具与权限控制 ---
+  # --- 工具与能力策略控制 ---
   tools:
     description: 'Comma-separated allowlist of tool names. Include bash if the agent may use GitHub CLI.'
     required: false
@@ -58,10 +58,22 @@ inputs:
     description: 'Disable all tools by default (true/false)'
     required: false
     default: 'false'
+  env_allow:
+    description: 'Additional comma-separated environment variable names to pass into the Pi subprocess'
+    required: false
+    default: ''
+  trust_project:
+    description: 'Whether to trust project-local .pi configuration (true/false, defaults to false)'
+    required: false
+    default: 'false'
+  allow_mcp:
+    description: 'Whether to enable MCP servers for this run (true/false, defaults to false)'
+    required: false
+    default: 'false'
 
   # --- GitHub 认证与运行环境 ---
   github_token:
-    description: 'GitHub token exposed as GH_TOKEN when bash tool is enabled'
+    description: 'GitHub token exposed as GH_TOKEN only when bash tool is enabled'
     required: false
     default: ${{ github.token }}
   pi_version:
@@ -91,7 +103,7 @@ outputs:
     description: 'Path to the file containing the full raw output'
     value: ${{ steps.run_pi.outputs.result_file }}
   exit_code:
-    description: 'Process exit code of the Pi execution'
+    description: 'Exit code of the execution (0 = Ok, 30 = Infrastructure)'
     value: ${{ steps.run_pi.outputs.exit_code }}
 
 runs:
@@ -117,29 +129,14 @@ runs:
       shell: bash
       env:
         PI_VERSION: ${{ inputs.pi_version }}
-      run: |
-        export PATH="$HOME/.pi-cli/bin:$PATH"
-        echo "$HOME/.pi-cli/bin" >> "$GITHUB_PATH"
-        if [ -x "$HOME/.pi-cli/bin/pi" ]; then
-          INSTALLED_VER=$("$HOME/.pi-cli/bin/pi" --version 2>/dev/null || true)
-          if [ "$PI_VERSION" != "latest" ] && [ "$INSTALLED_VER" = "$PI_VERSION" ]; then
-            echo "Using cached Pi CLI v${INSTALLED_VER}"
-            exit 0
-          fi
-        fi
-        if command -v pi >/dev/null 2>&1 && [ "$PI_VERSION" = "latest" ]; then
-          echo "Using pre-installed Pi CLI $(pi --version 2>/dev/null || true)"
-          exit 0
-        fi
-        mkdir -p "$HOME/.pi-cli"
-        npm install -g --prefix "$HOME/.pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
+      run: bash "${{ github.action_path }}/scripts/setup-pi-cli.sh"
 
     - name: Setup Pi Configuration and Extensions
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
       run: |
-        node "${ACTION_PATH}/scripts/setup-pi-config.mjs"
+        node "${ACTION_PATH}/dist/setup-pi-config.js"
 
     - name: Run Pi Agent
       id: run_pi
@@ -157,11 +154,14 @@ runs:
         INPUT_EXCLUDE_TOOLS: ${{ inputs.exclude_tools }}
         INPUT_NO_BUILTIN_TOOLS: ${{ inputs.no_builtin_tools }}
         INPUT_NO_TOOLS: ${{ inputs.no_tools }}
+        INPUT_ENV_ALLOW: ${{ inputs.env_allow }}
+        INPUT_TRUST_PROJECT: ${{ inputs.trust_project }}
+        INPUT_ALLOW_MCP: ${{ inputs.allow_mcp }}
         INPUT_PROMPT_TEMPLATE: ${{ inputs.prompt_template }}
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
         INPUT_RESULT_FILE: ${{ inputs.result_file }}
         INPUT_WRITE_SUMMARY: ${{ inputs.write_summary }}
-        GH_TOKEN: ${{ inputs.github_token }}
+        INPUT_GITHUB_TOKEN: ${{ inputs.github_token }}
       run: |
-        node "${ACTION_PATH}/scripts/run-agent.mjs"
+        node "${ACTION_PATH}/dist/run-agent.js"

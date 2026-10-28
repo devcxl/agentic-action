@@ -95,7 +95,7 @@ packages/
 scripts/setup-pi-cli.sh      # 安装/缓存的唯一实现，各 action.yml 只调用它
 action.yml                   # root：声明输入 + 调用 dist/run-agent.js
 pr-review/action.yml         # 声明输入 + 调用 dist/review-pr.js
-issue-triage/action.yml      # 声明输入 + 调用 dist/triage-issue.js
+triage/action.yml            # 声明输入 + 调用 dist/triage-issue.js
 ```
 
 `dist/` 由 esbuild 打包成**单文件入口**并提交（action 运行时不装依赖），CI 校验 `dist` 与源码一致。
@@ -204,7 +204,7 @@ inputs ──parse/validate──▶ ReviewRequest
 | P2 通用 runner v2 | 原型验证 `submit_*` 工具在 `pi --mode json` 下的精确取值字段；实现 `actions/run-agent` + `adapters/pi` + `ResultWriter` + 新退出码 | 契约测试用假 pi 可执行文件覆盖：正常、超时、非零退出、超长输出、事件流含 U+2028、事件流损坏 |
 | P3 审查管线 v2 | `core/review/*` + `adapters/git` + `submit_review` 扩展工具 + 分块执行 | golden fixture：给定期望 patch 集與 `max_chunks`，断言 `ChunkPlan`、`plannedCoverage`/`totalCoverage` 与最终 `ReviewReport` 完全确定；无凭据时返回 `skipped` + `ExitCode.Ok` |
 | P4 发布与门禁 v2 | `adapters/github`（去除分页上限、429/5xx 退避）、`GateDecision`、双 `action.yml` 切到 `dist/` | 单测覆盖：0/1/50/100/1000+ 条评论分页；429 `Retry-After` 与 5xx 退避 |
-| P5 收尾 | 删除 `scripts/`、`docs/` 更新、tag `v2.0.0`、`@v1` 迁移说明 | `git grep` 无残留 `scripts/` 引用；外部仓库按 README 示例可跑 |
+| P5 收尾 | 删除旧 v1 `scripts/*.mjs` 与 `scripts/pr-review/`（仅保留 `scripts/setup-pi-cli.sh`）、`docs/` 更新、tag `v2.0.0`、`@v1` 迁移说明 | `git grep` 无残留 v1 `.mjs` 入口引用；外部仓库按 README 示例可跑 |
 
 Issue 分类（T1）在 P0 之后即可并行开展，联动（T2）在 P3 之后接入，详见 [triage-design.md](./triage-design.md#9-排期与验收)。
 
