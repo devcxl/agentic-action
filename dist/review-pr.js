@@ -10521,6 +10521,17 @@ async function runPrReview(env = process.env, options = {}) {
         includes: extraInclude,
         baseSnapshot: true
       });
+      if (auditModeRaw === "auto" && targetPath !== "." && targetPath !== "./" && inventory.files.length === 0 && existsSync5(resolve4(cwd, targetPath))) {
+        inventory = collectSnapshotInventory({
+          cwd,
+          outDir: contextDir,
+          targetPath,
+          maxFileBytes,
+          maxFiles,
+          excludes: extraExclude,
+          includes: extraInclude
+        });
+      }
     } catch (err) {
       return failInfra(err instanceof Error ? err.message : String(err));
     }

@@ -93,7 +93,7 @@ jobs:
           HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
         with:
           provider: half-cabbage
-          model: minimax-m3
+          model: deepseek-v4.1-flash
           thinking: high
           audit_mode: ${{ inputs.audit_mode || 'codebase' }}
           target_path: ${{ steps.target.outputs.effective_path }}

@@ -240,6 +240,23 @@ export async function runPrReview(
         includes: extraInclude,
         baseSnapshot: true,
       });
+      if (
+        auditModeRaw === "auto" &&
+        targetPath !== "." &&
+        targetPath !== "./" &&
+        inventory.files.length === 0 &&
+        existsSync(resolve(cwd, targetPath))
+      ) {
+        inventory = collectSnapshotInventory({
+          cwd,
+          outDir: contextDir,
+          targetPath,
+          maxFileBytes,
+          maxFiles,
+          excludes: extraExclude,
+          includes: extraInclude,
+        });
+      }
     } catch (err) {
       return failInfra(err instanceof Error ? err.message : String(err));
     }
