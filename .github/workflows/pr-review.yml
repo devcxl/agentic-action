@@ -1,13 +1,11 @@
-# 超大型 PR 的本地比对审查工作流 (v2)
+# 超大型 PR 的本地比对审查与 Issue 联动工作流 (v2)
+#
+# 触发方式：
+#   1. pull_request (opened, synchronize, reopened, ready_for_review)
+#   2. workflow_dispatch：支持手动指定 pr_number、max_chunks、link_issues 等参数进行测试。
 #
 # 在其他仓库中使用时，无需复制任何脚本或提示词文件，直接引用：
 #   uses: devcxl/agentic-action/pr-review@main
-#
-# 安全与设计特性：
-#   1. fetch-depth: 0 + persist-credentials: false 检出，在 Runner 本地基于 git merge-base 生成分块上下文，并自动擦除 .git/config 残留凭证。
-#   2. 审查上下文与 base 快照生成在 ${RUNNER_TEMP}/pi-review-context，不污染工作区，不干扰 Agent 的 grep/find。
-#   3. Agent 运行在 --no-approve --no-mcp 与纯只读工具集（read,grep,find,ls,submit_review）下，子进程采用严格环境变量白名单。
-#   4. 基于 HTML Marker（<!-- pi-review:begin -->）通过 GitHub API 完整分页查找并幂等更新评论。
 
 name: PR Review (large diff)
 
@@ -23,6 +21,18 @@ on:
         description: '本次最多审查的 chunk 数（0 = 不限）'
         required: false
         default: '0'
+      link_issues:
+        description: '是否启用关联 Issue 与 PR 类型联动 (true/false)'
+        required: false
+        default: 'true'
+      include_issue_body:
+        description: '是否将关联 Issue 正文导出至 contextDir/linked-issues (true/false)'
+        required: false
+        default: 'false'
+      fail_on:
+        description: '门禁级别 (none, low, medium, high, critical)'
+        required: false
+        default: 'high'
 
 concurrency:
   group: pr-review-${{ github.event.pull_request.number || inputs.pr_number }}
@@ -55,8 +65,11 @@ jobs:
           thinking: 'high'
           pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
           max_chunks: ${{ inputs.max_chunks || '0' }}
+          link_issues: ${{ inputs.link_issues || 'true' }}
+          include_issue_body: ${{ inputs.include_issue_body || 'false' }}
+          triage_config: '.github/triage.yml'
           exclude: '**/dist/**,**/vendor/**'
-          fail_on: 'high'
+          fail_on: ${{ inputs.fail_on || 'high' }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
           typesafe_api_key: ${{ secrets.TYPESAFE_API_KEY }}
         env:

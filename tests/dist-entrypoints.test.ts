@@ -64,4 +64,33 @@ process.stdout.write("hello from bundled runner\\n");
     expect(out).toContain("result=hello from bundled runner");
     expect(out).toContain(`exit_code=${ExitCode.Ok}`);
   });
+
+  it("validates repository .github/triage.yml and executes dist/triage-issue.js & dist/review-pr.js", async () => {
+    const { parseAndValidateTriageConfig } = await import("@agentic-action/core");
+    const repoTriageYaml = readFileSync(join(rootDir, ".github/triage.yml"), "utf8");
+    const parsedConfig = parseAndValidateTriageConfig(repoTriageYaml);
+    expect(parsedConfig.model).toBe("jev-1.14.0");
+    expect(parsedConfig.fallback).toBe("other");
+
+    // Test dist/triage-issue.js with existing label idempotency
+    const triageOut = join(workDir, "triage_out.txt");
+    writeFileSync(triageOut, "", "utf8");
+    execFileSync(process.execPath, [join(rootDir, "dist/triage-issue.js")], {
+      cwd: rootDir,
+      env: {
+        PATH: process.env.PATH,
+        RUNNER_TEMP: workDir,
+        GITHUB_OUTPUT: triageOut,
+        INPUT_ISSUE_NUMBER: "1",
+        INPUT_ISSUE_TITLE: "Bug report",
+        INPUT_ISSUE_LABELS: "type/bug",
+        INPUT_TRIAGE_CONFIG: ".github/triage.yml",
+        INPUT_APPLY_LABEL: "false",
+      },
+      stdio: "ignore",
+    });
+    const triageOutText = readFileSync(triageOut, "utf8");
+    expect(triageOutText).toContain("verdict=skipped_existing");
+    expect(triageOutText).toContain(`exit_code=${ExitCode.Ok}`);
+  });
 });

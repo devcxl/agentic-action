@@ -1,0 +1,20 @@
+model: jev-1.14.0
+confidence_floor: 0.6
+fallback: other
+max_body_chars: 8000
+types:
+  bug:
+    label: type/bug
+    description: "行为与预期不符、崩溃、报错或回归缺陷"
+  feature:
+    label: type/feature
+    description: "新增功能特性或改进现有能力的请求"
+  question:
+    label: type/question
+    description: "使用方式咨询、配置疑问或非缺陷类求助"
+  docs:
+    label: type/docs
+    description: "文档缺失、过时或表述错误"
+  other:
+    label: needs-triage
+    description: "以上都不是，或信息不足以判断具体分类"

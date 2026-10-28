@@ -1,4 +1,4 @@
-# v2 架构自检工作流：类型检查、dist 一致性校验与全套契约/单测
+# v2 架构自检工作流：类型检查、dist 一致性校验与全套契约/单测（含 Issue Triage 与 PR Review）
 
 name: CI & Selftest
 
@@ -17,7 +17,8 @@ on:
       - 'pnpm-lock.yaml'
       - 'tsconfig.json'
       - 'vitest.config.ts'
-      - '.github/workflows/pr-review*.yml'
+      - '.github/triage.yml'
+      - '.github/workflows/*.yml'
       - '.github/prompts/pr-review.md'
   workflow_dispatch:
 

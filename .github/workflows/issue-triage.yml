@@ -1,0 +1,75 @@
+# Issue 自动分类工作流 (TypeSafe Jev + Verifier)
+#
+# 触发方式：
+#   1. issues (opened)：新 Issue 创建时自动分类并幂等打标。
+#   2. workflow_dispatch：支持在 Actions 页面手动输入 issue_number 或自定义标题/正文进行测试。
+#
+# 在其他外部仓库中使用时，直接引用：
+#   uses: devcxl/agentic-action/triage@main
+
+name: Issue Triage
+
+on:
+  issues:
+    types: [opened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: '要分类的现有 Issue 编号（留空则仅按下方标题/正文做干跑测试）'
+        required: false
+        default: ''
+      issue_title:
+        description: '测试用 Issue 标题（workflow_dispatch 干跑时使用）'
+        required: false
+        default: ''
+      issue_body:
+        description: '测试用 Issue 正文（workflow_dispatch 干跑时使用）'
+        required: false
+        default: ''
+      apply_label:
+        description: '是否将分类标签写入 GitHub Issue (true/false)'
+        required: false
+        default: 'true'
+
+concurrency:
+  group: triage-${{ github.event.issue.number || inputs.issue_number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository (for local ./triage action and .github/triage.yml)
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run Jev Issue Triage
+        id: triage
+        uses: ./triage
+        with:
+          issue_number: ${{ github.event.issue.number || inputs.issue_number }}
+          issue_title: ${{ inputs.issue_title }}
+          issue_body: ${{ inputs.issue_body }}
+          triage_config: '.github/triage.yml'
+          apply_label: ${{ inputs.apply_label || 'true' }}
+          typesafe_api_key: ${{ secrets.TYPESAFE_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print Triage Output
+        shell: bash
+        env:
+          OUT_TYPE: ${{ steps.triage.outputs.type }}
+          OUT_LABEL: ${{ steps.triage.outputs.label }}
+          OUT_CONFIDENCE: ${{ steps.triage.outputs.confidence }}
+          OUT_VERDICT: ${{ steps.triage.outputs.verdict }}
+          OUT_APPLIED: ${{ steps.triage.outputs.applied }}
+          OUT_EXIT: ${{ steps.triage.outputs.exit_code }}
+        run: |
+          echo "verdict=${OUT_VERDICT} type=${OUT_TYPE} label=${OUT_LABEL} confidence=${OUT_CONFIDENCE} applied=${OUT_APPLIED} exit_code=${OUT_EXIT}"
