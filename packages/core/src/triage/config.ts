@@ -17,22 +17,27 @@ export const DEFAULT_TRIAGE_CONFIG: TriageConfig = {
     bug: {
       label: "type/bug",
       description: "行为与预期不符、崩溃、回归",
+      color: "d73a4a",
     },
     feature: {
       label: "type/feature",
       description: "新增能力或改进现有能力的请求",
+      color: "a2eeef",
     },
     question: {
       label: "type/question",
       description: "使用方式、咨询、非缺陷类求助",
+      color: "d876e3",
     },
     docs: {
       label: "type/docs",
       description: "文档缺失或错误",
+      color: "0075ca",
     },
     other: {
       label: "needs-triage",
       description: "以上都不是，或信息不足以判断",
+      color: "fbca04",
     },
   },
 };
@@ -157,6 +162,10 @@ export function parseAndValidateTriageConfig(
     const label = typeof spec.label === "string" ? spec.label.trim() : "";
     const description =
       typeof spec.description === "string" ? spec.description.trim() : "";
+    const rawColor =
+      typeof spec.color === "string"
+        ? spec.color.trim().replace(/^#/, "").toLowerCase()
+        : undefined;
 
     if (!label) {
       throw new Error(`triage 配置错误: types.${key}.label 不能为空`);
@@ -164,13 +173,23 @@ export function parseAndValidateTriageConfig(
     if (!description) {
       throw new Error(`triage 配置错误: types.${key}.description 不能为空`);
     }
+    if (rawColor !== undefined && !/^[0-9a-f]{6}$/.test(rawColor)) {
+      throw new Error(
+        `triage 配置错误: types.${key}.color "${spec.color}" 必须是 6 位十六进制颜色值`,
+      );
+    }
     if (seenLabels.has(label)) {
       throw new Error(
         `triage 配置错误: label "${label}" 重复，每个类型的 label 必须全局唯一`,
       );
     }
     seenLabels.add(label);
-    types[key] = { label, description };
+    const defaultColor = DEFAULT_TRIAGE_CONFIG.types[key]?.color ?? "ededed";
+    types[key] = {
+      label,
+      description,
+      color: rawColor ?? defaultColor,
+    };
   }
 
   const fallback =

@@ -5,16 +5,21 @@ max_body_chars: 8000
 types:
   bug:
     label: type/bug
+    color: "d73a4a"
     description: "行为与预期不符、崩溃、报错或回归缺陷"
   feature:
     label: type/feature
+    color: "a2eeef"
     description: "新增功能特性或改进现有能力的请求"
   question:
     label: type/question
+    color: "d876e3"
     description: "使用方式咨询、配置疑问或非缺陷类求助"
   docs:
     label: type/docs
+    color: "0075ca"
     description: "文档缺失、过时或表述错误"
   other:
     label: needs-triage
+    color: "fbca04"
     description: "以上都不是，或信息不足以判断具体分类"

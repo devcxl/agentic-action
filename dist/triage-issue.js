@@ -10086,23 +10086,28 @@ var DEFAULT_TRIAGE_CONFIG = {
   types: {
     bug: {
       label: "type/bug",
-      description: "\u884C\u4E3A\u4E0E\u9884\u671F\u4E0D\u7B26\u3001\u5D29\u6E83\u3001\u56DE\u5F52"
+      description: "\u884C\u4E3A\u4E0E\u9884\u671F\u4E0D\u7B26\u3001\u5D29\u6E83\u3001\u56DE\u5F52",
+      color: "d73a4a"
     },
     feature: {
       label: "type/feature",
-      description: "\u65B0\u589E\u80FD\u529B\u6216\u6539\u8FDB\u73B0\u6709\u80FD\u529B\u7684\u8BF7\u6C42"
+      description: "\u65B0\u589E\u80FD\u529B\u6216\u6539\u8FDB\u73B0\u6709\u80FD\u529B\u7684\u8BF7\u6C42",
+      color: "a2eeef"
     },
     question: {
       label: "type/question",
-      description: "\u4F7F\u7528\u65B9\u5F0F\u3001\u54A8\u8BE2\u3001\u975E\u7F3A\u9677\u7C7B\u6C42\u52A9"
+      description: "\u4F7F\u7528\u65B9\u5F0F\u3001\u54A8\u8BE2\u3001\u975E\u7F3A\u9677\u7C7B\u6C42\u52A9",
+      color: "d876e3"
     },
     docs: {
       label: "type/docs",
-      description: "\u6587\u6863\u7F3A\u5931\u6216\u9519\u8BEF"
+      description: "\u6587\u6863\u7F3A\u5931\u6216\u9519\u8BEF",
+      color: "0075ca"
     },
     other: {
       label: "needs-triage",
-      description: "\u4EE5\u4E0A\u90FD\u4E0D\u662F\uFF0C\u6216\u4FE1\u606F\u4E0D\u8DB3\u4EE5\u5224\u65AD"
+      description: "\u4EE5\u4E0A\u90FD\u4E0D\u662F\uFF0C\u6216\u4FE1\u606F\u4E0D\u8DB3\u4EE5\u5224\u65AD",
+      color: "fbca04"
     }
   }
 };
@@ -10183,11 +10188,17 @@ function parseAndValidateTriageConfig(rawInput) {
     const spec = rawSpec;
     const label = typeof spec.label === "string" ? spec.label.trim() : "";
     const description = typeof spec.description === "string" ? spec.description.trim() : "";
+    const rawColor = typeof spec.color === "string" ? spec.color.trim().replace(/^#/, "").toLowerCase() : void 0;
     if (!label) {
       throw new Error(`triage \u914D\u7F6E\u9519\u8BEF: types.${key}.label \u4E0D\u80FD\u4E3A\u7A7A`);
     }
     if (!description) {
       throw new Error(`triage \u914D\u7F6E\u9519\u8BEF: types.${key}.description \u4E0D\u80FD\u4E3A\u7A7A`);
+    }
+    if (rawColor !== void 0 && !/^[0-9a-f]{6}$/.test(rawColor)) {
+      throw new Error(
+        `triage \u914D\u7F6E\u9519\u8BEF: types.${key}.color "${spec.color}" \u5FC5\u987B\u662F 6 \u4F4D\u5341\u516D\u8FDB\u5236\u989C\u8272\u503C`
+      );
     }
     if (seenLabels.has(label)) {
       throw new Error(
@@ -10195,7 +10206,12 @@ function parseAndValidateTriageConfig(rawInput) {
       );
     }
     seenLabels.add(label);
-    types[key] = { label, description };
+    const defaultColor = DEFAULT_TRIAGE_CONFIG.types[key]?.color ?? "ededed";
+    types[key] = {
+      label,
+      description,
+      color: rawColor ?? defaultColor
+    };
   }
   const fallback = obj.fallback !== void 0 ? String(obj.fallback).trim() : DEFAULT_TRIAGE_CONFIG.fallback;
   if (!fallback || !(fallback in types)) {
@@ -10469,8 +10485,18 @@ async function applyTriageLabelIdempotent(options) {
     return {
       action: "skipped_existing",
       label: options.targetLabel,
-      existingLabels
+      existingLabels,
+      createdLabels: []
     };
+  }
+  const configuredSpecsByLabel = new Map(
+    Object.values(options.config.types).map((spec) => [spec.label, spec])
+  );
+  const targetSpec = configuredSpecsByLabel.get(options.targetLabel);
+  if (!targetSpec) {
+    throw new Error(
+      `\u76EE\u6807\u6807\u7B7E "${options.targetLabel}" \u672A\u5728 triage \u914D\u7F6E\u4E2D\u58F0\u660E\uFF0C\u62D2\u7EDD\u521B\u5EFA\u6216\u6253\u6807`
+    );
   }
   const repoLabels = await getRepoLabelNames({
     repo: options.repo,
@@ -10478,15 +10504,30 @@ async function applyTriageLabelIdempotent(options) {
     apiUrl,
     fetchImpl: options.fetchImpl
   });
-  const requiredLabels = Object.values(options.config.types).map(
-    (t) => t.label
-  );
-  const missingLabels = requiredLabels.filter((l) => !repoLabels.has(l));
-  if (missingLabels.length > 0 || !repoLabels.has(options.targetLabel)) {
-    const missing = missingLabels.length > 0 ? missingLabels.join(", ") : options.targetLabel;
-    throw new Error(
-      `\u4ED3\u5E93 ${options.repo} \u7F3A\u5C11\u914D\u7F6E\u7684\u6807\u7B7E: ${missing}\uFF08\u6309\u5B89\u5168\u5951\u7EA6\u4E0D\u81EA\u52A8\u521B\u5EFA\u6807\u7B7E\uFF0C\u8BF7\u5148\u5728\u4ED3\u5E93\u4E2D\u521B\u5EFA\uFF09`
-    );
+  const createdLabels = [];
+  for (const spec of configuredSpecsByLabel.values()) {
+    if (repoLabels.has(spec.label)) continue;
+    const createLabelUrl = `${apiUrl}/repos/${options.repo}/labels`;
+    try {
+      await githubRequest(createLabelUrl, {
+        method: "POST",
+        token: options.token,
+        body: {
+          name: spec.label,
+          color: (spec.color || "ededed").replace(/^#/, ""),
+          description: spec.description.slice(0, 100)
+        },
+        fetchImpl: options.fetchImpl
+      });
+      repoLabels.add(spec.label);
+      createdLabels.push(spec.label);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("(422)")) {
+        throw err;
+      }
+      repoLabels.add(spec.label);
+    }
   }
   const addUrl = `${apiUrl}/repos/${options.repo}/issues/${options.issueNumber}/labels`;
   await githubRequest(addUrl, {
@@ -10498,7 +10539,8 @@ async function applyTriageLabelIdempotent(options) {
   return {
     action: "applied",
     label: options.targetLabel,
-    existingLabels
+    existingLabels,
+    createdLabels
   };
 }
 

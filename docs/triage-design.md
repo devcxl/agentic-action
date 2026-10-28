@@ -19,7 +19,7 @@
 - 优先级、模块、重复 Issue 检测等其他维度。
 - 二次模型投票、自一致性校验（Jev 自带校准过的置信度，见 §2）。
 - 让 Jev 参与代码审查或校验 `Finding`。
-- 自动创建标签、自动关闭 Issue、自动评论。
+- 自动关闭 Issue、自动评论、或脱离 `.github/triage.yml` 白名单由模型凭空创建标签。
 
 ---
 
@@ -113,7 +113,7 @@ types:
 | `fallback` 必须是 `types` 中的键 | 同上 |
 | `confidence_floor` 在 (0, 1] | 同上 |
 | `model` 不得以 `-latest` / `-preview` 结尾 | 同上，避免阈值随别名漂移（可显式关闭，见 §10） |
-| 所有 `label` 必须已存在于仓库 | 运行时检查；缺失即报错，**不自动创建** |
+| 仓库缺失配置中的 `label` | Executor 仅按 `.github/triage.yml` 白名单定义（`label`、`color`、`description`）幂等自动创建缺失标签（忽略并发 422 `already_exists`）；绝不创建未在配置中声明的标签 |
 
 `fallback` 项的 `label`（默认 `needs-triage`）同时是降级时使用的标签，所以"降级"和"落入兜底类型"走同一条路径。
 
@@ -179,7 +179,7 @@ type TriageDecision =
 | Jev 400 / 401 / 422 | 不重试 | `Infrastructure` |
 | 响应违约（Verifier 步骤 1、2） | 不打标签 | `InvalidReport` |
 | 低置信度、落入兜底类型 | 打 `fallback` 标签 | `Ok` |
-| 标签在仓库不存在 | 报配置错误 | `Infrastructure` |
+| 仓库缺少配置标签 | 按 `.github/triage.yml` 定义幂等创建后打标（若创建 API 失败则报 `Infrastructure`） | `Ok` / `Infrastructure` |
 | GitHub 写入失败 | 不重复打标签（幂等），报错 | `Infrastructure` |
 
 退出码沿用 v2 的 `ExitCode`。triage job **不应设为 required check**，分类失败不阻塞任何合并。
@@ -275,7 +275,7 @@ T1 验收（均用假 Jev 服务器，不访问真实 API）：
 - `verify` 表驱动：confidence 刚好等于 / 略低于 floor；`choice` 不在白名单；`probabilities` 含未知键；概率和越界；选中 fallback。
 - 配置校验：§4.1 每条规则一个失败用例，加默认配置通过用例。
 - `adapters/typesafe`：200、429 退避后成功、429 耗尽、401、422、响应缺字段、超时。
-- Executor：Issue 已有类型标签则零写入；重复投递同一事件只产生一次写入；标签不存在时报错且零写入。
+- Executor：Issue 已有类型标签则零写入；重复投递同一事件只产生一次写入；仓库缺失 `.github/triage.yml` 中声明的标签时自动按配置创建并打标。
 - 环境隔离：构造含 `TYPESAFE_API_KEY` 的环境，断言 pi 子进程环境不含它。
 
 T2 验收：

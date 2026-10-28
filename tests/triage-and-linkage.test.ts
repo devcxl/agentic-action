@@ -369,10 +369,11 @@ describe("Issue Triage (Jev) & PR Review Linkage (T1 & T2)", () => {
   });
 
   describe("T1: Executor & runIssueTriage end-to-end", () => {
-    it("skips with 0 writes when issue already has a type label, applies once on duplicate delivery, and fails with 0 writes if repo lacks configured labels", async () => {
+    it("skips with 0 writes when issue already has a type label, applies once on duplicate delivery, and auto-creates missing labels from .github/triage.yml", async () => {
       const repoLabels = new Set(["type/bug", "type/feature", "type/question", "type/docs", "needs-triage"]);
       const issueLabels: string[] = [];
       let labelPostCount = 0;
+      const createdRepoLabels: Array<{ name: string; color: string; description: string }> = [];
 
       const mockFetch = (async (url: string | URL | Request, init?: RequestInit) => {
         const u = String(url);
@@ -418,6 +419,17 @@ describe("Issue Triage (Jev) & PR Review Linkage (T1 & T2)", () => {
             JSON.stringify([...repoLabels].map((name) => ({ name }))),
             { status: 200 },
           );
+        }
+
+        if (u.endsWith("/repos/devcxl/agentic-action/labels") && method === "POST") {
+          const body = JSON.parse(String(init?.body)) as {
+            name: string;
+            color: string;
+            description: string;
+          };
+          repoLabels.add(body.name);
+          createdRepoLabels.push(body);
+          return new Response(JSON.stringify(body), { status: 201 });
         }
 
         if (u.endsWith("/issues/42/labels") && method === "POST") {
@@ -466,7 +478,7 @@ describe("Issue Triage (Jev) & PR Review Linkage (T1 & T2)", () => {
       expect(run2.result.verdict).toBe("skipped_existing");
       expect(labelPostCount).toBe(1);
 
-      // Run 3: Repo missing configured label -> fails with ExitCode.Infrastructure (30) and 0 new writes
+      // Run 3: Repo missing configured label "type/bug" -> auto-creates "type/bug" from .github/triage.yml and applies it!
       issueLabels.length = 0;
       repoLabels.delete("type/bug");
 
@@ -481,8 +493,15 @@ describe("Issue Triage (Jev) & PR Review Linkage (T1 & T2)", () => {
         { cwd: workDir, fetchImpl: mockFetch, sleepImpl: async () => {} },
       );
 
-      expect(run3.exitCode).toBe(ExitCode.Infrastructure);
-      expect(labelPostCount).toBe(1);
+      expect(run3.exitCode).toBe(ExitCode.Ok);
+      expect(createdRepoLabels).toEqual([
+        {
+          name: "type/bug",
+          color: "d73a4a",
+          description: "行为与预期不符、崩溃、回归",
+        },
+      ]);
+      expect(labelPostCount).toBe(2);
     });
 
     it("strips HTML comments and truncates issue body in buildIssueState", () => {

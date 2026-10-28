@@ -294,9 +294,11 @@ export async function getRepoLabelNames(options: {
 }
 
 /**
- * Idempotent Executor for issue triage labels (per `docs/triage-design.md` §4.1 & §6.1):
+ * Idempotent Executor for issue triage labels:
  * 1. If the issue already has any configured type label (including fallback), skip and do 0 writes.
- * 2. Verify that all configured labels (and target label) exist in the repo; never auto-create missing labels.
+ * 2. Ensure the target label (which must be declared in `config.types`) exists in the repo;
+ *    if missing in the repo, automatically create it from the `.github/triage.yml` definition
+ *    (handling concurrent 422 `already_exists` idempotently).
  * 3. Add only the target label (`POST /repos/{repo}/issues/{issue}/labels`).
  */
 export async function applyTriageLabelIdempotent(options: {
@@ -312,6 +314,7 @@ export async function applyTriageLabelIdempotent(options: {
   action: "applied" | "skipped_existing";
   label: string;
   existingLabels: string[];
+  createdLabels: string[];
 }> {
   const apiUrl = (options.apiUrl || "https://api.github.com").replace(
     /\/+$/,
@@ -336,7 +339,18 @@ export async function applyTriageLabelIdempotent(options: {
       action: "skipped_existing",
       label: options.targetLabel,
       existingLabels,
+      createdLabels: [],
     };
+  }
+
+  const configuredSpecsByLabel = new Map(
+    Object.values(options.config.types).map((spec) => [spec.label, spec]),
+  );
+  const targetSpec = configuredSpecsByLabel.get(options.targetLabel);
+  if (!targetSpec) {
+    throw new Error(
+      `目标标签 "${options.targetLabel}" 未在 triage 配置中声明，拒绝创建或打标`,
+    );
   }
 
   const repoLabels = await getRepoLabelNames({
@@ -346,16 +360,31 @@ export async function applyTriageLabelIdempotent(options: {
     fetchImpl: options.fetchImpl,
   });
 
-  const requiredLabels = Object.values(options.config.types).map(
-    (t) => t.label,
-  );
-  const missingLabels = requiredLabels.filter((l) => !repoLabels.has(l));
-  if (missingLabels.length > 0 || !repoLabels.has(options.targetLabel)) {
-    const missing =
-      missingLabels.length > 0 ? missingLabels.join(", ") : options.targetLabel;
-    throw new Error(
-      `仓库 ${options.repo} 缺少配置的标签: ${missing}（按安全契约不自动创建标签，请先在仓库中创建）`,
-    );
+  const createdLabels: string[] = [];
+  for (const spec of configuredSpecsByLabel.values()) {
+    if (repoLabels.has(spec.label)) continue;
+    const createLabelUrl = `${apiUrl}/repos/${options.repo}/labels`;
+    try {
+      await githubRequest(createLabelUrl, {
+        method: "POST",
+        token: options.token,
+        body: {
+          name: spec.label,
+          color: (spec.color || "ededed").replace(/^#/, ""),
+          description: spec.description.slice(0, 100),
+        },
+        fetchImpl: options.fetchImpl,
+      });
+      repoLabels.add(spec.label);
+      createdLabels.push(spec.label);
+    } catch (err) {
+      // Ignore 422 already_exists from concurrent workflow runs
+      const msg = err instanceof Error ? err.message : String(err);
+      if (!msg.includes("(422)")) {
+        throw err;
+      }
+      repoLabels.add(spec.label);
+    }
   }
 
   const addUrl = `${apiUrl}/repos/${options.repo}/issues/${options.issueNumber}/labels`;
@@ -370,6 +399,7 @@ export async function applyTriageLabelIdempotent(options: {
     action: "applied",
     label: options.targetLabel,
     existingLabels,
+    createdLabels,
   };
 }
 

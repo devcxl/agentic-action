@@ -3,6 +3,7 @@ import { Type, type Static } from "@sinclair/typebox";
 export interface TriageTypeSpec {
   label: string;
   description: string;
+  color?: string;
 }
 
 export interface TriageConfig {
