@@ -18,7 +18,7 @@
   - 子进程环境变量采用**严格白名单**（仅放行基础运行环境与当前 `provider` 所需密钥），`GITHUB_TOKEN`、`GH_TOKEN`、`TYPESAFE_API_KEY`、`INPUT_*` 一律不进入只读 Pi 子进程。
   - 启动 Pi 前自动擦除 `.git/config` 中可能残留的 `http.*.extraheader` 凭证，并在发布评论与 Summary 前按已知敏感值做精确子串脱敏。
 - **开箱即用超大型 PR 审查**：在 Runner 内基于全量 git `merge-base` 生成分块 diff 与 base 快照，绕开 GitHub diff API 的 20000 行上限（`HTTP 406 too_large`）。
-- **`submit_review` 结构化输出与双覆盖率**：通过扩展工具与 TypeBox schema 强制校验审查结果，告别散文正则抠 JSON；区分 `plannedCoverage` 与 `totalCoverage`。
+- **`submit_review` 结构化输出与双覆盖率**：通过扩展工具与 JSON Schema 强制校验审查结果，告别散文正则抠 JSON；区分 `plannedCoverage` 与 `totalCoverage`。
 - **TypeSafe Jev Issue 自动分类与 PR 联动**：
   - 使用判别式模型 Jev（`POST /v1/systemone`）对 Issue 零样本分类，由纯函数 Verifier 执行白名单与置信度门限校验，低于阈值自动降级为 `needs-triage`。
   - PR 审查自动读取关联 Issue 类型与 PR 类型，动态路由审查侧重点与 `thinking` 档位，同时确保不可信的 Issue 标题与正文绝不拼入 Pi 提示词。

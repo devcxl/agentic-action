@@ -20,7 +20,7 @@ HTTP 406 Not Acceptable
 | 模块 | 作用 |
 | --- | --- |
 | `pr-review/action.yml` | 子 Action 入口：调用 `scripts/setup-pi-cli.sh`、`dist/setup-pi-config.js` 与 `dist/review-pr.js`，并按 `ExitCode` 枚举执行门禁 |
-| `packages/contracts/` | 纯类型与 TypeBox schema（`CapabilityPolicy`、`ReviewReport`、`SubmitReviewInput`、`ExitCode`） |
+| `packages/contracts/` | 纯类型与常量契约（`CapabilityPolicy`、`ReviewReport`、`SubmitReviewInput`、`ExitCode`，零运行时依赖） |
 | `packages/core/src/review/` | 纯函数核心：按目录聚类与 `max_chunks` 预算裁剪（`budget.ts`）、分块报告合并与去重（`merge.ts`）、双覆盖率门禁判定（`gate.ts`）、Issue/PR 联动策略（`policy.ts`） |
 | `packages/adapters/src/git.ts` | `.git/config` 凭据擦除、base 解析与临时凭据补拉、浅克隆校验、逐文件 patch 与 `base/` 快照生成 |
 | `packages/adapters/src/pi.ts` | 启动受控 `pi --mode json` 子进程、严格按 LF 解析 JSONL 事件流、提取 `submit_review` 工具结果、瞬时错误退避重试 |

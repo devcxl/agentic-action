@@ -8,9 +8,6 @@ importers:
 
   .:
     dependencies:
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.52
       yaml:
         specifier: ^2.7.0
         version: 2.9.1
@@ -36,9 +33,6 @@ importers:
       '@agentic-action/core':
         specifier: workspace:*
         version: link:../core
-      yaml:
-        specifier: ^2.7.0
-        version: 2.9.1
 
   packages/adapters:
     dependencies:
@@ -48,33 +42,19 @@ importers:
       '@agentic-action/core':
         specifier: workspace:*
         version: link:../core
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.52
 
-  packages/contracts:
-    dependencies:
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.52
+  packages/contracts: {}
 
   packages/core:
     dependencies:
       '@agentic-action/contracts':
         specifier: workspace:*
         version: link:../contracts
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.52
       yaml:
         specifier: ^2.7.0
         version: 2.9.1
 
-  packages/extensions:
-    dependencies:
-      '@sinclair/typebox':
-        specifier: ^0.34.0
-        version: 0.34.52
+  packages/extensions: {}
 
 packages:
 
@@ -189,9 +169,6 @@ packages:
 
   '@rolldown/pluginutils@1.0.1':
     resolution: {integrity: sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw==}
-
-  '@sinclair/typebox@0.34.52':
-    resolution: {integrity: sha512-XiMQh7qqVlxZzcVD+kkGMNGMzcTrDMLWI7S4x7z1MkCkbDPrekpZXEUK0eZqZFMuHQg2a2DZOcDIh9o5v3Gonw==}
 
   '@types/chai@5.2.3':
     resolution: {integrity: sha512-Mw558oeA9fFbv65/y4mHtXDs9bPnFMZAL/jxdPFUpOHHIXX91mcgEHbS5Lahr+pwZFR8A7GQleRWeI6cGFC2UA==}
@@ -657,8 +634,6 @@ snapshots:
     optional: true
 
   '@rolldown/pluginutils@1.0.1': {}
-
-  '@sinclair/typebox@0.34.52': {}
 
   '@types/chai@5.2.3':
     dependencies:

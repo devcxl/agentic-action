@@ -6,7 +6,6 @@
 
 import { execFileSync } from "node:child_process";
 import {
-  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -28,8 +27,6 @@ const ENTRYPOINTS = [
   { name: "triage-issue.js", src: "packages/actions/src/triage-issue.ts" },
   { name: "setup-pi-config.js", src: "packages/actions/src/setup-pi-config.ts" },
 ];
-
-const EXTENSIONS = ["ci-logger.ts", "halfcabbage.ts", "submit-review.ts"];
 
 function resolveEsbuildBin() {
   const localBin = join(ROOT, "node_modules", ".bin", "esbuild");
@@ -76,20 +73,7 @@ function main() {
           );
         }
       }
-
-      for (const ext of EXTENSIONS) {
-        const srcExt = readFileSync(
-          join(ROOT, "packages/extensions/src", ext),
-          "utf8",
-        );
-        const dstPath = join(ROOT, "pi-config/extensions", ext);
-        if (!existsSync(dstPath) || readFileSync(dstPath, "utf8") !== srcExt) {
-          throw new Error(
-            `pi-config/extensions/${ext} is out of sync with packages/extensions/src/${ext}`,
-          );
-        }
-      }
-      console.log("[build:check] dist/ and extensions are up-to-date with source.");
+      console.log("[build:check] dist/ bundles are up-to-date with source.");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -101,15 +85,6 @@ function main() {
     const outPath = join(DIST_DIR, entry.name);
     bundleEntry(entry.src, outPath);
     console.log(`[build] Bundled ${entry.src} -> dist/${entry.name}`);
-  }
-
-  const piExtDir = join(ROOT, "pi-config/extensions");
-  mkdirSync(piExtDir, { recursive: true });
-  for (const ext of EXTENSIONS) {
-    copyFileSync(
-      join(ROOT, "packages/extensions/src", ext),
-      join(piExtDir, ext),
-    );
   }
 }
 

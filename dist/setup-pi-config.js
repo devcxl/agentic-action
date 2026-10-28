@@ -17,29 +17,17 @@ function setupPiConfig(options = {}) {
   const __dirname = dirname(fileURLToPath(import.meta.url));
   const actionPath = options.actionPath || process.env.ACTION_PATH || resolve(__dirname, "../../..");
   const agentDir = options.agentDir || process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi", "agent");
-  const configDir = join(actionPath, "pi-config");
   const extTargetDir = join(agentDir, "extensions");
   mkdirSync(extTargetDir, { recursive: true });
-  const staleAgentsPath = join(agentDir, "AGENTS.md");
-  if (existsSync(staleAgentsPath)) {
-    rmSync(staleAgentsPath, { force: true });
-  }
-  const staleWebSearch = join(extTargetDir, "web-search.ts");
-  if (existsSync(staleWebSearch)) {
-    rmSync(staleWebSearch, { force: true });
-  }
-  const srcSettingsPath = join(configDir, "settings.json");
-  const dstSettingsPath = join(agentDir, "settings.json");
-  let baseSettings = {};
-  if (existsSync(srcSettingsPath)) {
-    try {
-      baseSettings = JSON.parse(
-        readFileSync(srcSettingsPath, "utf8")
-      );
-    } catch {
-      baseSettings = {};
+  for (const stale of [
+    join(agentDir, "AGENTS.md"),
+    join(extTargetDir, "web-search.ts")
+  ]) {
+    if (existsSync(stale)) {
+      rmSync(stale, { force: true });
     }
   }
+  const dstSettingsPath = join(agentDir, "settings.json");
   let existingSettings = {};
   if (existsSync(dstSettingsPath)) {
     try {
@@ -50,11 +38,9 @@ function setupPiConfig(options = {}) {
       existingSettings = {};
     }
   }
-  const trustValue = options.defaultProjectTrust ?? "never";
   const mergedSettings = {
-    ...baseSettings,
     ...existingSettings,
-    defaultProjectTrust: trustValue
+    defaultProjectTrust: options.defaultProjectTrust ?? "never"
   };
   writeFileSync(
     dstSettingsPath,
@@ -62,22 +48,14 @@ function setupPiConfig(options = {}) {
 `,
     "utf8"
   );
-  const pkgExtDir = join(actionPath, "packages", "extensions", "src");
-  const fallbackExtDir = join(configDir, "extensions");
-  const srcExtDir = existsSync(pkgExtDir) ? pkgExtDir : fallbackExtDir;
+  const srcExtDir = join(actionPath, "packages", "extensions", "src");
   const installedExtensions = [];
   if (existsSync(srcExtDir)) {
     for (const entry of readdirSync(srcExtDir, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts" || entry.name === "web-search.ts") {
-        continue;
-      }
-      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js") && !entry.name.endsWith(".mjs")) {
-        continue;
-      }
-      const srcFile = join(srcExtDir, entry.name);
-      const dstFile = join(extTargetDir, entry.name);
-      copyFileSync(srcFile, dstFile);
+      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts") continue;
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
+      copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);
     }
   }

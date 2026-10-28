@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import type { AgentUsage, SandboxSpec } from "@agentic-action/contracts";
+import { computeBackoffDelayMs, defaultSleep } from "./retry.ts";
 
 export interface PiStreamResult {
   exitCode: number;
@@ -359,9 +360,7 @@ export async function runPiWithRetry(
 ): Promise<{ result: PiStreamResult; attempts: number; durationsMs: number[] }> {
   const maxRetries = options.maxRetries ?? 2;
   const baseDelayMs = options.baseDelayMs ?? 500;
-  const sleep =
-    options.sleepImpl ??
-    ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const sleep = options.sleepImpl ?? defaultSleep;
 
   const durationsMs: number[] = [];
   let lastResult!: PiStreamResult;
@@ -379,7 +378,6 @@ export async function runPiWithRetry(
       return { result: lastResult, attempts: attempt, durationsMs };
     }
 
-    // Do not retry if aborted by caller signal, or if it's not a transient error/timeout
     const isRetryable =
       !options.signal?.aborted &&
       !hasToolOutput &&
@@ -389,9 +387,7 @@ export async function runPiWithRetry(
       return { result: lastResult, attempts: attempt, durationsMs };
     }
 
-    const jitter = 0.8 + Math.random() * 0.4;
-    const delay = Math.round(baseDelayMs * Math.pow(2, attempt - 1) * jitter);
-    await sleep(delay);
+    await sleep(computeBackoffDelayMs(attempt, baseDelayMs));
   }
 
   return {

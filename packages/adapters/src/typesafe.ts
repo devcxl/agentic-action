@@ -2,6 +2,7 @@ import type {
   JevSystemOneRequest,
   JevSystemOneResponse,
 } from "@agentic-action/contracts";
+import { computeBackoffDelayMs, defaultSleep } from "./retry.ts";
 
 export class TypeSafeError extends Error {
   readonly status: number;
@@ -26,16 +27,6 @@ export interface CallSystemOneOptions {
   sleepImpl?: (ms: number) => Promise<void>;
 }
 
-function parseRetryAfterMs(headerVal: string | null): number | null {
-  if (!headerVal) return null;
-  const trimmed = headerVal.trim();
-  const seconds = Number(trimmed);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.min(Math.round(seconds * 1000), 30_000);
-  }
-  return null;
-}
-
 /**
  * Call TypeSafe System One endpoint `POST /v1/systemone` with bounded exponential backoff
  * on 429 / 529 / 5xx / timeout (per `docs/triage-design.md` §2 & §6.2).
@@ -58,9 +49,7 @@ export async function callSystemOne(
   const timeoutMs = options.timeoutMs ?? 15_000;
   const maxRetries = options.maxRetries ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 300;
-  const sleep =
-    options.sleepImpl ??
-    ((ms: number) => new Promise((r) => setTimeout(r, ms)));
+  const sleep = options.sleepImpl ?? defaultSleep;
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${apiKey}`,
@@ -125,12 +114,7 @@ export async function callSystemOne(
         typeof res.headers?.get === "function"
           ? res.headers.get("retry-after")
           : null;
-      const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
-      const jitter = 0.8 + Math.random() * 0.4;
-      const backoffMs =
-        retryAfterMs ??
-        Math.round(baseDelayMs * Math.pow(2, attempt - 1) * jitter);
-      await sleep(backoffMs);
+      await sleep(computeBackoffDelayMs(attempt, baseDelayMs, retryAfterHeader));
     } catch (err) {
       clearTimeout(timer);
       if (err instanceof TypeSafeError && !err.retryable) {
@@ -157,11 +141,7 @@ export async function callSystemOne(
         throw lastError;
       }
 
-      const jitter = 0.8 + Math.random() * 0.4;
-      const backoffMs = Math.round(
-        baseDelayMs * Math.pow(2, attempt - 1) * jitter,
-      );
-      await sleep(backoffMs);
+      await sleep(computeBackoffDelayMs(attempt, baseDelayMs));
     }
   }
 
