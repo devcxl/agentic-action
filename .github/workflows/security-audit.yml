@@ -11,6 +11,10 @@ on:
         description: 'Optional branch/tag/SHA of target_repo'
         required: false
         default: ''
+      base_sha:
+        description: 'Optional base commit SHA when audit_mode is diff'
+        required: false
+        default: ''
       target_path:
         description: 'Relative directory or file path to audit within the target repository'
         required: false
@@ -78,13 +82,18 @@ jobs:
         run: |
           if [ -n "$TARGET_REPO" ]; then
             if [ "$TARGET_PATH" = "." ] || [ -z "$TARGET_PATH" ]; then
-              echo "effective_path=third-party-target" >> "$GITHUB_OUTPUT"
+              EFFECTIVE="third-party-target"
             else
-              echo "effective_path=third-party-target/${TARGET_PATH#./}" >> "$GITHUB_OUTPUT"
+              EFFECTIVE="third-party-target/${TARGET_PATH#./}"
             fi
           else
-            echo "effective_path=${TARGET_PATH}" >> "$GITHUB_OUTPUT"
+            EFFECTIVE="${TARGET_PATH}"
           fi
+          {
+            echo "effective_path<<__PI_EOF__"
+            printf '%s\n' "$EFFECTIVE"
+            echo "__PI_EOF__"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run Pi Third-Party Security Audit
         uses: ./security-audit
@@ -96,7 +105,8 @@ jobs:
           model: deepseek-v4.1-flash
           thinking: low
           audit_mode: ${{ inputs.audit_mode || 'codebase' }}
+          base_sha: ${{ inputs.base_sha }}
           target_path: ${{ steps.target.outputs.effective_path }}
           max_chunks: ${{ inputs.max_chunks || '5' }}
           fail_on: ${{ inputs.fail_on || 'high' }}
-          exclude: '**/dist/**,**/vendor/**,**/node_modules/**'
+          exclude: '**/dist/**,**/node_modules/**'

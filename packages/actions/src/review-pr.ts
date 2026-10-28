@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ExitCode,
@@ -114,11 +114,16 @@ export async function runPrReview(
     .split(/[,\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
-  if (targetPath !== "." && targetPath !== "./") {
-    const cleanTarget = targetPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
-    if (cleanTarget) {
-      extraInclude.push(cleanTarget, `${cleanTarget}/**`);
-    }
+  const resolvedTargetAbs = resolve(cwd, targetPath);
+  const relTarget = relative(cwd, resolvedTargetAbs).split("\\").join("/");
+  const diffIncludes = [...extraInclude];
+  if (
+    relTarget &&
+    relTarget !== "." &&
+    !relTarget.startsWith("..") &&
+    diffIncludes.length === 0
+  ) {
+    diffIncludes.push(relTarget, `${relTarget}/**`);
   }
 
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
@@ -207,6 +212,7 @@ export async function runPrReview(
         targetPath,
         maxFileBytes,
         maxFiles,
+        maxSnapshotBytes,
         excludes: extraExclude,
         includes: extraInclude,
       });
@@ -237,7 +243,7 @@ export async function runPrReview(
         maxFiles,
         maxSnapshotBytes,
         excludes: extraExclude,
-        includes: extraInclude,
+        includes: diffIncludes,
         baseSnapshot: true,
       });
       if (
@@ -253,6 +259,7 @@ export async function runPrReview(
           targetPath,
           maxFileBytes,
           maxFiles,
+          maxSnapshotBytes,
           excludes: extraExclude,
           includes: extraInclude,
         });

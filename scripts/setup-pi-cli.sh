@@ -22,4 +22,11 @@ if command -v pi >/dev/null 2>&1 && [ "$PI_VERSION" = "latest" ]; then
 fi
 
 mkdir -p "$HOME/.pi-cli"
-npm install -g --prefix "$HOME/.pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
+for attempt in 1 2 3; do
+  if npm install -g --prefix "$HOME/.pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"; then
+    exit 0
+  fi
+  echo "[setup-pi-cli] npm install attempt ${attempt} failed, retrying..." >&2
+  sleep 3
+done
+exit 1

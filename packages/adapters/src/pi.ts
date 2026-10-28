@@ -381,7 +381,9 @@ export async function runPiWithRetry(
     const isRetryable =
       !options.signal?.aborted &&
       !hasToolOutput &&
-      (lastResult.timedOut || Boolean(lastResult.transientError));
+      (lastResult.timedOut ||
+        Boolean(lastResult.transientError) ||
+        Boolean(options.requiredTool && !lastResult.aborted));
 
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };

@@ -7368,7 +7368,7 @@ var require_dist = __commonJS({
 // packages/actions/src/review-pr.ts
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname as dirname3, join as join5, resolve as resolve4 } from "node:path";
+import { dirname as dirname3, join as join5, relative as relative3, resolve as resolve5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // packages/contracts/src/agent-spec.ts
@@ -8068,7 +8068,13 @@ function validateSubmitReviewInput(raw) {
   if (!summary) {
     throw new Error("submit_review schema \u6821\u9A8C\u5931\u8D25: summary \u4E0D\u80FD\u4E3A\u7A7A");
   }
-  const verdict = obj.verdict === "approve" || obj.verdict === "comment" || obj.verdict === "request_changes" ? obj.verdict : "comment";
+  const rawVerdict = typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
+  if (rawVerdict !== "approve" && rawVerdict !== "comment" && rawVerdict !== "request_changes") {
+    throw new Error(
+      `submit_review schema \u6821\u9A8C\u5931\u8D25: verdict \u5FC5\u987B\u4E3A approve|comment|request_changes\uFF0C\u5B9E\u9645\u4E3A ${String(obj.verdict)}`
+    );
+  }
+  const verdict = rawVerdict;
   if (!Array.isArray(obj.findings)) {
     throw new Error("submit_review schema \u6821\u9A8C\u5931\u8D25: findings \u5FC5\u987B\u662F\u6570\u7EC4");
   }
@@ -8854,7 +8860,10 @@ function collectDiffInventory(options) {
   };
 }
 var SNAPSHOT_SKIP_DIRS = /* @__PURE__ */ new Set([".git", "node_modules"]);
-function listFilesRecursively(rootDir, currentDir, acc = []) {
+function sanitizePatchHeaderPath(rawPath) {
+  return rawPath.replace(/[\r\n\0-\x1f]+/g, "_");
+}
+function listFilesRecursively(currentDir, acc = []) {
   const stat = lstatSync(currentDir);
   if (stat.isSymbolicLink()) return acc;
   if (stat.isFile()) {
@@ -8867,7 +8876,7 @@ function listFilesRecursively(rootDir, currentDir, acc = []) {
     if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     const childPath = join(currentDir, entry.name);
     if (entry.isDirectory()) {
-      listFilesRecursively(rootDir, childPath, acc);
+      listFilesRecursively(childPath, acc);
     } else if (entry.isFile()) {
       acc.push(childPath);
     }
@@ -8889,6 +8898,7 @@ function collectSnapshotInventory(options) {
   }
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
   const maxFiles = options.maxFiles ?? 0;
+  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
   const userExcludes = options.excludes ?? [];
   const userIncludes = options.includes ?? [];
   const noDefaultExcludes = options.noDefaultExcludes ?? false;
@@ -8896,9 +8906,11 @@ function collectSnapshotInventory(options) {
   const excludeRes = defaultPatterns.map(globToRegExp);
   const extraExcludeRes = userExcludes.map(globToRegExp);
   const includeRes = userIncludes.map(globToRegExp);
-  const absFiles = listFilesRecursively(repoCwd, targetAbs);
+  const absFiles = listFilesRecursively(targetAbs);
   const files = [];
+  const fileContents = /* @__PURE__ */ new Map();
   const skipped = { excluded: [], binary: [], empty: [] };
+  let totalSnapshotBytes = 0;
   for (const absPath of absFiles) {
     const path = relative(repoCwd, absPath).split("\\").join("/");
     let excludedBy = null;
@@ -8913,16 +8925,26 @@ function collectSnapshotInventory(options) {
       skipped.excluded.push({ path, reason: excludedBy });
       continue;
     }
-    const buf = readFileSync(absPath);
-    if (buf.length === 0) {
+    const stat = lstatSync(absPath);
+    if (stat.size === 0) {
       skipped.empty.push({ path, reason: "empty-file" });
       continue;
     }
+    if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
+      skipped.excluded.push({
+        path,
+        reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`
+      });
+      continue;
+    }
+    const buf = readFileSync(absPath);
     if (buf.subarray(0, 8192).includes(0)) {
       skipped.binary.push({ path, reason: "binary" });
       continue;
     }
+    totalSnapshotBytes += buf.length;
     const text = buf.toString("utf8");
+    fileContents.set(path, text);
     const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
     files.push({
       path,
@@ -8940,6 +8962,7 @@ function collectSnapshotInventory(options) {
   files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
   if (maxFiles > 0 && files.length > maxFiles) {
     for (const file of files.slice(maxFiles)) {
+      fileContents.delete(file.path);
       skipped.excluded.push({
         path: file.path,
         reason: `over-max-files(${maxFiles})`,
@@ -8958,10 +8981,12 @@ function collectSnapshotInventory(options) {
     const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
-    const text = readFileSync(join(repoCwd, file.path), "utf8");
+    const text = fileContents.get(file.path) ?? "";
+    fileContents.delete(file.path);
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+    const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch = `--- /dev/null
-+++ b/${file.path}
++++ b/${safeHeaderPath}
 @@ -0,0 +1,${bodyLines.length} @@
 ` + bodyLines.map((line) => `+${line}`).join("\n") + "\n";
     const bytes = Buffer.byteLength(patch, "utf8");
@@ -8997,7 +9022,7 @@ function collectSnapshotInventory(options) {
 }
 
 // packages/adapters/src/retry.ts
-var defaultSleep = (ms) => new Promise((resolve5) => setTimeout(resolve5, ms));
+var defaultSleep = (ms) => new Promise((resolve6) => setTimeout(resolve6, ms));
 function parseRetryAfterMs(headerVal) {
   if (!headerVal) return null;
   const seconds = Number(headerVal.trim());
@@ -9527,7 +9552,7 @@ async function runPiWithRetry(sandbox, options = {}) {
     if (lastResult.exitCode === 0 && hasToolOutput) {
       return { result: lastResult, attempts: attempt, durationsMs };
     }
-    const isRetryable = !options.signal?.aborted && !hasToolOutput && (lastResult.timedOut || Boolean(lastResult.transientError));
+    const isRetryable = !options.signal?.aborted && !hasToolOutput && (lastResult.timedOut || Boolean(lastResult.transientError) || Boolean(options.requiredTool && !lastResult.aborted));
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };
     }
@@ -9683,8 +9708,8 @@ function countBySeverity(findings) {
   return counts;
 }
 function renderReviewComment(report, options = {}) {
-  const marker = options.marker || "pi-review";
-  const title = options.title || "Pi Agent \u4EE3\u7801\u5BA1\u67E5";
+  const marker = (options.marker || "pi-review").replace(/[^A-Za-z0-9_.-]/g, "") || "pi-review";
+  const title = (options.title || "Pi Agent \u4EE3\u7801\u5BA1\u67E5").replace(/[\r\n`]+/g, " ").replace(/<!--|-->/g, "").trim().slice(0, 120) || "Pi Agent \u4EE3\u7801\u5BA1\u67E5";
   const maxBytes = options.maxBytes ?? COMMENT_LIMIT - 1024;
   const counts = countBySeverity(report.findings);
   const lines = [];
@@ -10204,7 +10229,7 @@ async function resolveIssuePrLinkage(params) {
 
 // packages/actions/src/review-pr-runner.ts
 import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
-import { join as join4 } from "node:path";
+import { join as join4, relative as relative2, resolve as resolve4 } from "node:path";
 function resolveSubmitReviewExtensionPath(actionRoot) {
   const candidates = [
     join4(actionRoot, "packages/extensions/src/submit-review.ts"),
@@ -10244,8 +10269,10 @@ async function executeReviewChunks(params) {
     sleepImpl
   } = params;
   const defaultPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
-  const defaultPromptPath = join4(actionRoot, defaultPromptRel);
-  const baseReviewContract = existsSync4(defaultPromptPath) ? readFileSync4(defaultPromptPath, "utf8") : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const resolvedPromptPath = resolve4(actionRoot, defaultPromptRel);
+  const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
+  const isPromptInsideActionRoot = !relToActionRoot.startsWith("..") && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
+  const baseReviewContract = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) ? readFileSync4(resolvedPromptPath, "utf8") : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt ? `${baseReviewContract}
 
@@ -10372,11 +10399,11 @@ ${userAppendPrompt}` : baseReviewContract;
 // packages/actions/src/review-pr.ts
 var __dirname = dirname3(fileURLToPath(import.meta.url));
 function resolveDefaultActionRoot() {
-  const distParent = resolve4(__dirname, "..");
+  const distParent = resolve5(__dirname, "..");
   if (existsSync5(join5(distParent, "packages/extensions/src"))) {
     return distParent;
   }
-  return resolve4(__dirname, "../../..");
+  return resolve5(__dirname, "../../..");
 }
 var REPO_ROOT = resolveDefaultActionRoot();
 function readPrMetadataFromEvent(eventPath) {
@@ -10399,7 +10426,7 @@ async function runPrReview(env = process.env, options = {}) {
   const startMs = Date.now();
   const cwd = options.cwd ?? process.cwd();
   const fetchImpl = options.fetchImpl ?? fetch;
-  const actionRoot = env.ACTION_ROOT ? resolve4(cwd, env.ACTION_ROOT) : REPO_ROOT;
+  const actionRoot = env.ACTION_ROOT ? resolve5(cwd, env.ACTION_ROOT) : REPO_ROOT;
   const eventPr = readPrMetadataFromEvent(env.GITHUB_EVENT_PATH);
   const prNumber = (env.INPUT_PR_NUMBER || eventPr.prNumber || "").trim();
   const maxChunks = Math.max(0, Number(env.INPUT_MAX_CHUNKS || "0") || 0);
@@ -10417,11 +10444,11 @@ async function runPrReview(env = process.env, options = {}) {
   const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
   const extraInclude = (env.INPUT_INCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
-  if (targetPath !== "." && targetPath !== "./") {
-    const cleanTarget = targetPath.replace(/^\.\/+/, "").replace(/\/+$/, "");
-    if (cleanTarget) {
-      extraInclude.push(cleanTarget, `${cleanTarget}/**`);
-    }
+  const resolvedTargetAbs = resolve5(cwd, targetPath);
+  const relTarget = relative3(cwd, resolvedTargetAbs).split("\\").join("/");
+  const diffIncludes = [...extraInclude];
+  if (relTarget && relTarget !== "." && !relTarget.startsWith("..") && diffIncludes.length === 0) {
+    diffIncludes.push(relTarget, `${relTarget}/**`);
   }
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
   const includeIssueBody = (env.INPUT_INCLUDE_ISSUE_BODY ?? "false").trim() === "true";
@@ -10437,7 +10464,7 @@ async function runPrReview(env = process.env, options = {}) {
   ]);
   const logger = createLogger("pr-review", secretValues);
   const tempBase = env.RUNNER_TEMP || tmpdir();
-  const contextDir = env.INPUT_CONTEXT_DIR ? resolve4(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, "pi-review-context");
+  const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, "pi-review-context");
   mkdirSync3(contextDir, { recursive: true });
   const failInfra = (reason) => {
     logger.error(reason);
@@ -10489,6 +10516,7 @@ async function runPrReview(env = process.env, options = {}) {
         targetPath,
         maxFileBytes,
         maxFiles,
+        maxSnapshotBytes,
         excludes: extraExclude,
         includes: extraInclude
       });
@@ -10518,16 +10546,17 @@ async function runPrReview(env = process.env, options = {}) {
         maxFiles,
         maxSnapshotBytes,
         excludes: extraExclude,
-        includes: extraInclude,
+        includes: diffIncludes,
         baseSnapshot: true
       });
-      if (auditModeRaw === "auto" && targetPath !== "." && targetPath !== "./" && inventory.files.length === 0 && existsSync5(resolve4(cwd, targetPath))) {
+      if (auditModeRaw === "auto" && targetPath !== "." && targetPath !== "./" && inventory.files.length === 0 && existsSync5(resolve5(cwd, targetPath))) {
         inventory = collectSnapshotInventory({
           cwd,
           outDir: contextDir,
           targetPath,
           maxFileBytes,
           maxFiles,
+          maxSnapshotBytes,
           excludes: extraExclude,
           includes: extraInclude
         });
@@ -10776,7 +10805,7 @@ async function runPrReview(env = process.env, options = {}) {
   }
   return gateExitCode;
 }
-if (process.argv[1] && import.meta.url === `file://${resolve4(process.argv[1])}`) {
+if (process.argv[1] && import.meta.url === `file://${resolve5(process.argv[1])}`) {
   runPrReview(process.env).then((code) => {
     process.exitCode = code;
   }).catch((error) => {

@@ -423,6 +423,7 @@ export interface CollectSnapshotOptions {
   targetPath?: string;
   maxFileBytes?: number;
   maxFiles?: number;
+  maxSnapshotBytes?: number;
   excludes?: string[];
   includes?: string[];
   noDefaultExcludes?: boolean;
@@ -430,8 +431,11 @@ export interface CollectSnapshotOptions {
 
 const SNAPSHOT_SKIP_DIRS = new Set([".git", "node_modules"]);
 
+function sanitizePatchHeaderPath(rawPath: string): string {
+  return rawPath.replace(/[\r\n\0-\x1f]+/g, "_");
+}
+
 function listFilesRecursively(
-  rootDir: string,
   currentDir: string,
   acc: string[] = [],
 ): string[] {
@@ -448,7 +452,7 @@ function listFilesRecursively(
     if (entry.isDirectory() && SNAPSHOT_SKIP_DIRS.has(entry.name)) continue;
     const childPath = join(currentDir, entry.name);
     if (entry.isDirectory()) {
-      listFilesRecursively(rootDir, childPath, acc);
+      listFilesRecursively(childPath, acc);
     } else if (entry.isFile()) {
       acc.push(childPath);
     }
@@ -479,6 +483,7 @@ export function collectSnapshotInventory(
 
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
   const maxFiles = options.maxFiles ?? 0;
+  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
   const userExcludes = options.excludes ?? [];
   const userIncludes = options.includes ?? [];
   const noDefaultExcludes = options.noDefaultExcludes ?? false;
@@ -488,9 +493,11 @@ export function collectSnapshotInventory(
   const extraExcludeRes = userExcludes.map(globToRegExp);
   const includeRes = userIncludes.map(globToRegExp);
 
-  const absFiles = listFilesRecursively(repoCwd, targetAbs);
+  const absFiles = listFilesRecursively(targetAbs);
   const files: DiffFileEntry[] = [];
+  const fileContents = new Map<string, string>();
   const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
+  let totalSnapshotBytes = 0;
 
   for (const absPath of absFiles) {
     const path = relative(repoCwd, absPath).split("\\").join("/");
@@ -507,17 +514,28 @@ export function collectSnapshotInventory(
       continue;
     }
 
-    const buf = readFileSync(absPath);
-    if (buf.length === 0) {
+    const stat = lstatSync(absPath);
+    if (stat.size === 0) {
       skipped.empty.push({ path, reason: "empty-file" });
       continue;
     }
+    if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
+      skipped.excluded.push({
+        path,
+        reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`,
+      });
+      continue;
+    }
+
+    const buf = readFileSync(absPath);
     if (buf.subarray(0, 8192).includes(0)) {
       skipped.binary.push({ path, reason: "binary" });
       continue;
     }
 
+    totalSnapshotBytes += buf.length;
     const text = buf.toString("utf8");
+    fileContents.set(path, text);
     const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
     files.push({
       path,
@@ -536,6 +554,7 @@ export function collectSnapshotInventory(
   files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
   if (maxFiles > 0 && files.length > maxFiles) {
     for (const file of files.slice(maxFiles)) {
+      fileContents.delete(file.path);
       skipped.excluded.push({
         path: file.path,
         reason: `over-max-files(${maxFiles})`,
@@ -559,10 +578,12 @@ export function collectSnapshotInventory(
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
 
-    const text = readFileSync(join(repoCwd, file.path), "utf8");
+    const text = fileContents.get(file.path) ?? "";
+    fileContents.delete(file.path);
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
+    const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch =
-      `--- /dev/null\n+++ b/${file.path}\n@@ -0,0 +1,${bodyLines.length} @@\n` +
+      `--- /dev/null\n+++ b/${safeHeaderPath}\n@@ -0,0 +1,${bodyLines.length} @@\n` +
       bodyLines.map((line) => `+${line}`).join("\n") +
       "\n";
 

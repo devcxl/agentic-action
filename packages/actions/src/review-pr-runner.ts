@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative, resolve } from "node:path";
 import type {
   AgentSpec,
   AgentUsage,
@@ -94,10 +94,15 @@ export async function executeReviewChunks(params: {
 
   const defaultPromptRel =
     (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
-  const defaultPromptPath = join(actionRoot, defaultPromptRel);
-  const baseReviewContract = existsSync(defaultPromptPath)
-    ? readFileSync(defaultPromptPath, "utf8")
-    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
+  const relToActionRoot = relative(actionRoot, resolvedPromptPath);
+  const isPromptInsideActionRoot =
+    !relToActionRoot.startsWith("..") &&
+    resolve(actionRoot, relToActionRoot) === resolvedPromptPath;
+  const baseReviewContract =
+    isPromptInsideActionRoot && existsSync(resolvedPromptPath)
+      ? readFileSync(resolvedPromptPath, "utf8")
+      : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt
     ? `${baseReviewContract}\n\n${userAppendPrompt}`
