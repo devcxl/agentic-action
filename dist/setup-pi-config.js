@@ -21,7 +21,8 @@ function setupPiConfig(options = {}) {
   mkdirSync(extTargetDir, { recursive: true });
   for (const stale of [
     join(agentDir, "AGENTS.md"),
-    join(extTargetDir, "web-search.ts")
+    join(extTargetDir, "web-search.ts"),
+    join(extTargetDir, "submit-review.ts")
   ]) {
     if (existsSync(stale)) {
       rmSync(stale, { force: true });
@@ -53,7 +54,9 @@ function setupPiConfig(options = {}) {
   if (existsSync(srcExtDir)) {
     for (const entry of readdirSync(srcExtDir, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts") continue;
+      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts" || entry.name === "submit-review.ts") {
+        continue;
+      }
       if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
       copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);

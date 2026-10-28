@@ -38,10 +38,11 @@ export function setupPiConfig(
   const extTargetDir = join(agentDir, "extensions");
   mkdirSync(extTargetDir, { recursive: true });
 
-  // Clean up legacy v1 artifacts if cached on runner
+  // Clean up legacy v1 artifacts or task-scoped extensions if cached in global agentDir
   for (const stale of [
     join(agentDir, "AGENTS.md"),
     join(extTargetDir, "web-search.ts"),
+    join(extTargetDir, "submit-review.ts"),
   ]) {
     if (existsSync(stale)) {
       rmSync(stale, { force: true });
@@ -75,7 +76,14 @@ export function setupPiConfig(
   if (existsSync(srcExtDir)) {
     for (const entry of readdirSync(srcExtDir, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts") continue;
+      // submit-review.ts is loaded explicitly via `-e` only during PR review to avoid global tool conflicts
+      if (
+        entry.name.endsWith(".d.ts") ||
+        entry.name === "index.ts" ||
+        entry.name === "submit-review.ts"
+      ) {
+        continue;
+      }
       if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
       copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);

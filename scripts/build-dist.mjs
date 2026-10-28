@@ -4,7 +4,6 @@
  * and verify `dist/` is up-to-date in `--check` mode.
  */
 
-import { execFileSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -15,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..");
@@ -28,33 +28,23 @@ const ENTRYPOINTS = [
   { name: "setup-pi-config.js", src: "packages/actions/src/setup-pi-config.ts" },
 ];
 
-function resolveEsbuildBin() {
-  const localBin = join(ROOT, "node_modules", ".bin", "esbuild");
-  if (existsSync(localBin)) return localBin;
-  return "esbuild";
-}
-
-function bundleEntry(srcRel, outPath) {
-  const esbuildBin = resolveEsbuildBin();
-  execFileSync(
-    esbuildBin,
-    [
-      join(ROOT, srcRel),
-      "--bundle",
-      "--platform=node",
-      "--target=node22",
-      "--format=esm",
-      "--banner:js=import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
-      `--outfile=${outPath}`,
-    ],
-    {
-      cwd: ROOT,
-      stdio: ["ignore", "pipe", "pipe"],
+async function bundleEntry(srcRel, outPath) {
+  await build({
+    absWorkingDir: ROOT,
+    entryPoints: [join(ROOT, srcRel)],
+    bundle: true,
+    platform: "node",
+    target: "node22",
+    format: "esm",
+    banner: {
+      js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
     },
-  );
+    outfile: outPath,
+    logLevel: "silent",
+  });
 }
 
-function main() {
+async function main() {
   if (isCheck) {
     const tmp = mkdtempSync(join(tmpdir(), "agentic-action-dist-check-"));
     try {
@@ -64,7 +54,7 @@ function main() {
           throw new Error(`Missing built file: dist/${entry.name} (run pnpm build)`);
         }
         const actualPath = join(tmp, entry.name);
-        bundleEntry(entry.src, actualPath);
+        await bundleEntry(entry.src, actualPath);
         const expected = readFileSync(expectedPath, "utf8");
         const actual = readFileSync(actualPath, "utf8");
         if (expected !== actual) {
@@ -83,9 +73,12 @@ function main() {
   mkdirSync(DIST_DIR, { recursive: true });
   for (const entry of ENTRYPOINTS) {
     const outPath = join(DIST_DIR, entry.name);
-    bundleEntry(entry.src, outPath);
+    await bundleEntry(entry.src, outPath);
     console.log(`[build] Bundled ${entry.src} -> dist/${entry.name}`);
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});
