@@ -345,9 +345,11 @@ export async function runPrReview(env = process.env) {
   );
 
   if (gateExitCode === 1) {
-    console.error(`::error::审查发现达到或高于 ${failOn} 级别的问题，详见 PR 评论`);
+    const prefix = env.PI_SUPPRESS_GH_ANNOTATIONS === "1" ? "[pr-review]" : "::error::";
+    console.error(`${prefix}审查发现达到或高于 ${failOn} 级别的问题，详见 PR 评论`);
   } else if (gateExitCode !== 0) {
-    console.error("::error::审查未能产出有效结构化报告，请检查运行日志");
+    const prefix = env.PI_SUPPRESS_GH_ANNOTATIONS === "1" ? "[pr-review]" : "::error::";
+    console.error(`${prefix}审查未能产出有效结构化报告，请检查运行日志`);
   }
   return gateExitCode;
 }

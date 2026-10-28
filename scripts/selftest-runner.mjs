@@ -246,6 +246,7 @@ console.log(\`Here is the review report:
         const gateCode = await runPrReview({
           ...process.env,
           PI_BIN: fakePi,
+          PI_SUPPRESS_GH_ANNOTATIONS: "1",
           RUNNER_TEMP: workDir,
           GITHUB_OUTPUT: prOutput,
           GITHUB_STEP_SUMMARY: prSummary,
