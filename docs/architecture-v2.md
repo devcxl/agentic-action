@@ -67,10 +67,10 @@ adapters/             git / pi 进程 / GitHub API / TypeSafe API / 文件与 ar
 
 ```
 packages/
-  contracts/                 # 纯类型 + TypeBox schema，零 IO（与 pi 扩展共用同一校验库）
-    src/agent-spec.ts        # AgentSpec、ToolPolicy、CapabilityPolicy
+  contracts/                 # 纯类型 + 常量，零 IO、零运行时依赖
+    src/agent-spec.ts        # AgentSpec、CapabilityPolicy、SandboxSpec
     src/review.ts            # DiffInventory、ReviewReport、Finding、GateDecision
-    src/triage.ts            # TriageConfig、Classification、TriageDecision
+    src/triage.ts            # TriageConfig、JevSystemOneResponse、TriageDecision
     src/result.ts            # RunResult 信封、ExitCode 枚举
   core/                      # 纯函数，可 100% 单测
     src/capability/policy.ts # CapabilityPolicy → SandboxSpec（工具集 + env 白名单）
@@ -136,7 +136,7 @@ export interface SandboxSpec {
 3. 评论发布与 Step Summary 写入前，统一用已知敏感值集合（当前进程中的 `GITHUB_TOKEN`、`INPUT_*`、放行的 `*_KEY` 的**实际值**，长度 ≥ 8）做精确子串脱敏，防止通过评论外带。
 4. 路径与网络级隔离（限制 `read` 只读特定目录、禁网）需要 OS 沙箱（如 `bwrap`），不在 `CapabilityPolicy` 中假装支持；若有需要单独作为容器化方案评估。
 
-**结构化输出**：审查阶段通过内置扩展注册 `submit_review` 工具（TypeBox `parameters` schema），并在 `CapabilityPolicy.tools` 中显式加入 `submit_review`（`--tools` 是精确白名单，未列出的扩展工具不会暴露给模型）。运行侧用 `pi --mode json` 按 LF 切分读取 JSONL 事件流（不用 `readline`，见 pi 文档 `json.md`），等待 `agent_settled`。工具在 `execute()` 中把校验后的负载写入 `details`，读取侧从 `turn_end.toolResults` 的 `ToolResultMessage.details`（或同轮 assistant 消息的 `toolCall.arguments`）提取，并在 P2 用原型测试固定其中一种。清理层不再需要 `extractJsonReport`。
+**结构化输出**：审查阶段通过内置扩展注册 `submit_review` 工具（JSON Schema `parameters`），并在 `CapabilityPolicy.tools` 中显式加入 `submit_review`（`--tools` 是精确白名单，未列出的扩展工具不会暴露给模型）。运行侧用 `pi --mode json` 按 LF 切分读取 JSONL 事件流（不用 `readline`，见 pi 文档 `json.md`），等待 `agent_settled`。工具在 `execute()` 中把校验后的负载写入 `details`，读取侧从 `turn_end.toolResults` 的 `ToolResultMessage.details`（或 `tool_execution_end.result.details`）提取。清理层不再需要 `extractJsonReport`。
 
 **结果信封与退出码**
 
@@ -200,7 +200,7 @@ inputs ──parse/validate──▶ ReviewRequest
 | 阶段 | 内容 | 验收 |
 | --- | --- | --- |
 | P1 安全止血（最优先） | 在现有 v1 代码上以**最小改动**落地：`--no-approve` + `defaultProjectTrust: "never"` + `--no-mcp`；`.git/config` extraheader 清理；env 改为固定基础集 + 当前 provider key 白名单；单点 `buildSandboxSpec`；输出敏感值脱敏；打 `v1.0.0` 与移动 tag `v1` | 单测断言：子进程 env 不含 `GITHUB_TOKEN`/`GH_TOKEN`/`INPUT_*` 及非当前 provider 的 `*_KEY`；`.git/config` 含 token 时运行后被清除；评论含 token 值时被替换为 `***`；现有 selftest 全绿 |
-| P0 地基 | workspace + TS + tsc 严格模式 + vitest + TypeBox；`contracts` 与 `core/capability`（迁入 P1 的 `buildSandboxSpec`）；`scripts/setup-pi-cli.sh` 收敛两份安装块 | `pnpm test` 全绿；CI 校验 `dist` 与源码一致；两个 `action.yml` 的安装逻辑只剩一行调用 |
+| P0 地基 | workspace + TS + tsc 严格模式 + vitest；`contracts` 与 `core/capability`（迁入 P1 的 `buildSandboxSpec`）；`scripts/setup-pi-cli.sh` 收敛两份安装块 | `pnpm test` 全绿；CI 校验 `dist` 与源码一致；两个 `action.yml` 的安装逻辑只剩一行调用 |
 | P2 通用 runner v2 | 原型验证 `submit_*` 工具在 `pi --mode json` 下的精确取值字段；实现 `actions/run-agent` + `adapters/pi` + `ResultWriter` + 新退出码 | 契约测试用假 pi 可执行文件覆盖：正常、超时、非零退出、超长输出、事件流含 U+2028、事件流损坏 |
 | P3 审查管线 v2 | `core/review/*` + `adapters/git` + `submit_review` 扩展工具 + 分块执行 | golden fixture：给定期望 patch 集與 `max_chunks`，断言 `ChunkPlan`、`plannedCoverage`/`totalCoverage` 与最终 `ReviewReport` 完全确定；无凭据时返回 `skipped` + `ExitCode.Ok` |
 | P4 发布与门禁 v2 | `adapters/github`（去除分页上限、429/5xx 退避）、`GateDecision`、双 `action.yml` 切到 `dist/` | 单测覆盖：0/1/50/100/1000+ 条评论分页；429 `Retry-After` 与 5xx 退避 |

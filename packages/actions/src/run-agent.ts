@@ -12,7 +12,6 @@ import {
   buildSandboxSpec,
   collectSensitiveValues,
   deriveCapabilityPolicy,
-  isShellEnabledInPolicy,
   redactText,
 } from "@agentic-action/core";
 import {
@@ -49,16 +48,6 @@ export interface RunAgentInputs {
   resultFile?: string;
   writeSummary?: string | boolean;
   timeoutMs?: number;
-}
-
-export function isShellToolEnabled(inputs: {
-  tools?: string;
-  excludeTools?: string;
-  noBuiltinTools?: string | boolean;
-  noTools?: string | boolean;
-}): boolean {
-  const policy = deriveCapabilityPolicy(inputs);
-  return isShellEnabledInPolicy(policy);
 }
 
 export function buildPiInvocation(
@@ -108,7 +97,8 @@ export function buildPiInvocation(
   };
 
   const sandbox = buildSandboxSpec(spec, hostEnv, {
-    githubToken: hostEnv.INPUT_GITHUB_TOKEN || hostEnv.GH_TOKEN || hostEnv.GITHUB_TOKEN,
+    githubToken:
+      hostEnv.INPUT_GITHUB_TOKEN || hostEnv.GH_TOKEN || hostEnv.GITHUB_TOKEN,
   });
 
   return {
@@ -118,36 +108,6 @@ export function buildPiInvocation(
     contextFiles,
     sandbox,
   };
-}
-
-export function buildChildEnv(
-  baseEnv: Readonly<Record<string, string | undefined>>,
-  inputs: Partial<RunAgentInputs>,
-): Record<string, string> {
-  const policy = deriveCapabilityPolicy({
-    tools: inputs.tools,
-    excludeTools: inputs.excludeTools,
-    noBuiltinTools: inputs.noBuiltinTools,
-    noTools: inputs.noTools,
-    provider: inputs.provider,
-    model: inputs.model ?? "",
-    envAllow: inputs.envAllow,
-    trustProject:
-      inputs.trustProject === true || inputs.trustProject === "true",
-    allowMcp: inputs.allowMcp === true || inputs.allowMcp === "true",
-  });
-
-  const spec: AgentSpec = {
-    prompt: inputs.prompt || "placeholder",
-    model: inputs.model || "",
-    provider: inputs.provider,
-    policy,
-  };
-
-  return buildSandboxSpec(spec, baseEnv, {
-    githubToken:
-      baseEnv.INPUT_GITHUB_TOKEN || baseEnv.GH_TOKEN || baseEnv.GITHUB_TOKEN,
-  }).env;
 }
 
 export async function runAgent(
@@ -175,7 +135,6 @@ export async function runAgent(
   const secretValues = collectSensitiveValues(env, [inputs.apiKey]);
   const logger = createLogger("run-agent", secretValues);
 
-  // Scrub any persisted .git/config extraheader before starting Pi
   scrubGitCredentials(cwd);
 
   const { sandbox } = buildPiInvocation(inputs, cwd, env);
@@ -302,9 +261,7 @@ if (
   runAgent(inputs)
     .then(({ exitCode }) => {
       if (exitCode !== ExitCode.Ok) {
-        process.stderr.write(
-          `[run-agent] Exiting with code ${exitCode}\n`,
-        );
+        process.stderr.write(`[run-agent] Exiting with code ${exitCode}\n`);
         process.exit(exitCode);
       }
     })

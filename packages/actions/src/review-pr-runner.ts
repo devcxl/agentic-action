@@ -30,14 +30,8 @@ import {
 } from "./review-pr-linkage.ts";
 
 function resolveSubmitReviewExtensionPath(actionRoot: string): string | undefined {
-  const candidates = [
-    join(actionRoot, "packages/extensions/src/submit-review.ts"),
-    join(actionRoot, "pi-config/extensions/submit-review.ts"),
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return undefined;
+  const candidate = join(actionRoot, "packages/extensions/src/submit-review.ts");
+  return existsSync(candidate) ? candidate : undefined;
 }
 
 export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {

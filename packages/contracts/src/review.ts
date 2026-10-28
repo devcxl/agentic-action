@@ -1,4 +1,3 @@
-import { Type, type Static } from "@sinclair/typebox";
 import type { ThinkingLevel } from "./agent-spec.ts";
 import type { ExitCode } from "./result.ts";
 
@@ -38,44 +37,23 @@ export const PR_KINDS = [
 ] as const;
 export type PrKind = (typeof PR_KINDS)[number];
 
-export const FindingSchema = Type.Object({
-  file: Type.String({ minLength: 1 }),
-  line: Type.Number({ minimum: 0 }),
-  severity: Type.Union([
-    Type.Literal("critical"),
-    Type.Literal("high"),
-    Type.Literal("medium"),
-    Type.Literal("low"),
-  ]),
-  category: Type.Union([
-    Type.Literal("correctness"),
-    Type.Literal("security"),
-    Type.Literal("compatibility"),
-    Type.Literal("error-handling"),
-    Type.Literal("performance"),
-    Type.Literal("maintainability"),
-    Type.Literal("other"),
-  ]),
-  title: Type.String({ minLength: 1 }),
-  detail: Type.String(),
-  suggestion: Type.String(),
-});
+export interface Finding {
+  file: string;
+  line: number;
+  severity: Severity;
+  category: Category;
+  title: string;
+  detail: string;
+  suggestion: string;
+}
 
-export type Finding = Static<typeof FindingSchema>;
-
-export const SubmitReviewInputSchema = Type.Object({
-  summary: Type.String({ minLength: 1 }),
-  verdict: Type.Union([
-    Type.Literal("approve"),
-    Type.Literal("comment"),
-    Type.Literal("request_changes"),
-  ]),
-  findings: Type.Array(FindingSchema),
-  files_reviewed: Type.Optional(Type.Number({ minimum: 0 })),
-  notes: Type.Optional(Type.String()),
-});
-
-export type SubmitReviewInput = Static<typeof SubmitReviewInputSchema>;
+export interface SubmitReviewInput {
+  summary: string;
+  verdict: "approve" | "comment" | "request_changes";
+  findings: Finding[];
+  files_reviewed?: number;
+  notes?: string;
+}
 
 export interface DiffFileEntry {
   path: string;

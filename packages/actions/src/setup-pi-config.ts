@@ -35,34 +35,21 @@ export function setupPiConfig(
     process.env.PI_CODING_AGENT_DIR ||
     join(homedir(), ".pi", "agent");
 
-  const configDir = join(actionPath, "pi-config");
   const extTargetDir = join(agentDir, "extensions");
   mkdirSync(extTargetDir, { recursive: true });
 
-  const staleAgentsPath = join(agentDir, "AGENTS.md");
-  if (existsSync(staleAgentsPath)) {
-    rmSync(staleAgentsPath, { force: true });
-  }
-
-  // Ensure removed web-search.ts extension is cleaned up if cached from an earlier run
-  const staleWebSearch = join(extTargetDir, "web-search.ts");
-  if (existsSync(staleWebSearch)) {
-    rmSync(staleWebSearch, { force: true });
-  }
-
-  const srcSettingsPath = join(configDir, "settings.json");
-  const dstSettingsPath = join(agentDir, "settings.json");
-  let baseSettings: Record<string, unknown> = {};
-  if (existsSync(srcSettingsPath)) {
-    try {
-      baseSettings = JSON.parse(
-        readFileSync(srcSettingsPath, "utf8"),
-      ) as Record<string, unknown>;
-    } catch {
-      baseSettings = {};
+  // Clean up legacy v1 artifacts or task-scoped extensions if cached in global agentDir
+  for (const stale of [
+    join(agentDir, "AGENTS.md"),
+    join(extTargetDir, "web-search.ts"),
+    join(extTargetDir, "submit-review.ts"),
+  ]) {
+    if (existsSync(stale)) {
+      rmSync(stale, { force: true });
     }
   }
 
+  const dstSettingsPath = join(agentDir, "settings.json");
   let existingSettings: Record<string, unknown> = {};
   if (existsSync(dstSettingsPath)) {
     try {
@@ -74,11 +61,9 @@ export function setupPiConfig(
     }
   }
 
-  const trustValue = options.defaultProjectTrust ?? "never";
   const mergedSettings: Record<string, unknown> = {
-    ...baseSettings,
     ...existingSettings,
-    defaultProjectTrust: trustValue,
+    defaultProjectTrust: options.defaultProjectTrust ?? "never",
   };
   writeFileSync(
     dstSettingsPath,
@@ -86,28 +71,21 @@ export function setupPiConfig(
     "utf8",
   );
 
-  // Prefer packages/extensions/src, fallback to pi-config/extensions
-  const pkgExtDir = join(actionPath, "packages", "extensions", "src");
-  const fallbackExtDir = join(configDir, "extensions");
-  const srcExtDir = existsSync(pkgExtDir) ? pkgExtDir : fallbackExtDir;
-
+  const srcExtDir = join(actionPath, "packages", "extensions", "src");
   const installedExtensions: string[] = [];
   if (existsSync(srcExtDir)) {
     for (const entry of readdirSync(srcExtDir, { withFileTypes: true })) {
       if (!entry.isFile()) continue;
-      if (entry.name.endsWith(".d.ts") || entry.name === "index.ts" || entry.name === "web-search.ts") {
-        continue;
-      }
+      // submit-review.ts is loaded explicitly via `-e` only during PR review to avoid global tool conflicts
       if (
-        !entry.name.endsWith(".ts") &&
-        !entry.name.endsWith(".js") &&
-        !entry.name.endsWith(".mjs")
+        entry.name.endsWith(".d.ts") ||
+        entry.name === "index.ts" ||
+        entry.name === "submit-review.ts"
       ) {
         continue;
       }
-      const srcFile = join(srcExtDir, entry.name);
-      const dstFile = join(extTargetDir, entry.name);
-      copyFileSync(srcFile, dstFile);
+      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
+      copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);
     }
   }

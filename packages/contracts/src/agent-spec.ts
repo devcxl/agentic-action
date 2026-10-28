@@ -33,13 +33,6 @@ export interface SandboxSpec {
   redactedArgv: string[];
 }
 
-export interface ToolPolicy {
-  tools?: string;
-  excludeTools?: string;
-  noBuiltinTools?: boolean;
-  noTools?: boolean;
-}
-
 export interface AgentSpec {
   prompt: string;
   systemPrompt?: string;

@@ -33,7 +33,8 @@ describe("Bundled dist/*.js CLI entrypoints (end-to-end)", () => {
       readFileSync(join(agentDir, "settings.json"), "utf8"),
     );
     expect(settings.defaultProjectTrust).toBe("never");
-    expect(existsSync(join(agentDir, "extensions/submit-review.ts"))).toBe(true);
+    expect(existsSync(join(agentDir, "extensions/ci-logger.ts"))).toBe(true);
+    expect(existsSync(join(agentDir, "extensions/submit-review.ts"))).toBe(false);
 
     const fakePi = join(workDir, "fake-pi.mjs");
     writeFileSync(

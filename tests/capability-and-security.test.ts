@@ -177,7 +177,7 @@ describe("CapabilityPolicy, SandboxSpec & Security (P0 / P1)", () => {
     expect(existsSync(join(extDir, "web-search.ts"))).toBe(false);
     expect(res.installedExtensions).toContain("ci-logger.ts");
     expect(res.installedExtensions).toContain("halfcabbage.ts");
-    expect(res.installedExtensions).toContain("submit-review.ts");
+    expect(res.installedExtensions).not.toContain("submit-review.ts");
     expect(res.installedExtensions).not.toContain("web-search.ts");
   });
 });

@@ -1,5 +1,3 @@
-import { Type, type Static } from "@sinclair/typebox";
-
 export interface TriageTypeSpec {
   label: string;
   description: string;
@@ -27,33 +25,16 @@ export interface JevSystemOneRequest {
   questions: Record<string, JevChoiceQuestion>;
 }
 
-export const JevChoiceAnswerSchema = Type.Object({
-  type: Type.Literal("choice"),
-  choice: Type.String({ minLength: 1 }),
-  confidence: Type.Number({ minimum: 0, maximum: 1 }),
-  probabilities: Type.Record(Type.String(), Type.Number({ minimum: 0, maximum: 1 })),
-});
-
-export type JevChoiceAnswer = Static<typeof JevChoiceAnswerSchema>;
-
-export const JevSystemOneResponseSchema = Type.Object({
-  model: Type.String({ minLength: 1 }),
-  answers: Type.Record(Type.String(), JevChoiceAnswerSchema),
-  usage: Type.Optional(
-    Type.Object({
-      input_tokens: Type.Number({ minimum: 0 }),
-      output_tokens: Type.Number({ minimum: 0 }),
-    }),
-  ),
-});
-
-export type JevSystemOneResponse = Static<typeof JevSystemOneResponseSchema>;
-
-export interface Classification {
-  model: string;
+export interface JevChoiceAnswer {
+  type: "choice";
   choice: string;
   confidence: number;
   probabilities: Record<string, number>;
+}
+
+export interface JevSystemOneResponse {
+  model: string;
+  answers: Record<string, JevChoiceAnswer>;
   usage?: {
     input_tokens: number;
     output_tokens: number;

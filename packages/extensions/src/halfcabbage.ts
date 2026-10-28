@@ -86,7 +86,10 @@ async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> 
   const url = process.env.MODELS_DEV_URL ?? "https://models.dev/api.json";
 
   try {
-    const response = await fetch(url, { headers: { Accept: "application/json" } });
+    const response = await fetch(url, {
+      headers: { Accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
 
     if (!response.ok) return {};
 

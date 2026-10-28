@@ -3,11 +3,11 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
+  "sideEffects": false,
   "main": "./src/index.ts",
   "types": "./src/index.ts",
   "dependencies": {
     "@agentic-action/contracts": "workspace:*",
-    "@agentic-action/core": "workspace:*",
-    "@sinclair/typebox": "^0.34.0"
+    "@agentic-action/core": "workspace:*"
   }
 }
