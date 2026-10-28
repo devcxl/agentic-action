@@ -16,7 +16,7 @@ inputs:
     required: false
     default: ''
   context_files:
-    description: 'Space-separated list of file paths to prepend with @ (e.g. "diff.patch doc.md")'
+    description: 'Space, comma, or newline-separated list of file paths to prepend with @ (e.g. "diff.patch doc.md")'
     required: false
     default: ''
   prompt_template:
@@ -59,17 +59,40 @@ inputs:
     required: false
     default: 'false'
 
-  # --- GitHub 认证与环境 ---
+  # --- GitHub 认证与运行环境 ---
   github_token:
-    description: 'GitHub token exposed as GH_TOKEN in the environment'
+    description: 'GitHub token exposed as GH_TOKEN when bash tool is enabled'
     required: false
     default: ${{ github.token }}
+  pi_version:
+    description: 'Version of @earendil-works/pi-coding-agent to install (default: 1.4.0, or latest)'
+    required: false
+    default: '1.4.0'
 
   # --- 输出与格式 ---
   mode:
     description: 'Output mode: text (default) or json'
     required: false
     default: 'text'
+  result_file:
+    description: 'Optional file path to save the raw Pi output'
+    required: false
+    default: ''
+  write_summary:
+    description: 'Whether to append output to GITHUB_STEP_SUMMARY (true/false)'
+    required: false
+    default: 'true'
+
+outputs:
+  result:
+    description: 'Agent output text (truncated to 32KB if oversized)'
+    value: ${{ steps.run_pi.outputs.result }}
+  result_file:
+    description: 'Path to the file containing the full raw output'
+    value: ${{ steps.run_pi.outputs.result_file }}
+  exit_code:
+    description: 'Process exit code of the Pi execution'
+    value: ${{ steps.run_pi.outputs.exit_code }}
 
 runs:
   using: 'composite'
@@ -79,40 +102,50 @@ runs:
       with:
         node-version: 22
 
-    - name: Cache npm global cache
+    - name: Cache Pi CLI installation
+      id: cache_pi
       uses: actions/cache@v4
       with:
-        path: ~/.npm
-        key: pi-npm-cache-${{ runner.os }}-${{ runner.arch }}
+        path: |
+          ~/.pi-cli
+          ~/.npm
+        key: pi-cli-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.pi_version }}
         restore-keys: |
-          pi-npm-cache-${{ runner.os }}-
+          pi-cli-v1-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Install Pi Coding Agent
       shell: bash
+      env:
+        PI_VERSION: ${{ inputs.pi_version }}
       run: |
-        if ! command -v pi >/dev/null 2>&1; then
-          npm install -g --ignore-scripts @earendil-works/pi-coding-agent@latest
+        export PATH="$HOME/.pi-cli/bin:$PATH"
+        echo "$HOME/.pi-cli/bin" >> "$GITHUB_PATH"
+        if [ -x "$HOME/.pi-cli/bin/pi" ]; then
+          INSTALLED_VER=$("$HOME/.pi-cli/bin/pi" --version 2>/dev/null || true)
+          if [ "$PI_VERSION" != "latest" ] && [ "$INSTALLED_VER" = "$PI_VERSION" ]; then
+            echo "Using cached Pi CLI v${INSTALLED_VER}"
+            exit 0
+          fi
         fi
+        if command -v pi >/dev/null 2>&1 && [ "$PI_VERSION" = "latest" ]; then
+          echo "Using pre-installed Pi CLI $(pi --version 2>/dev/null || true)"
+          exit 0
+        fi
+        mkdir -p "$HOME/.pi-cli"
+        npm install -g --prefix "$HOME/.pi-cli" --ignore-scripts "@earendil-works/pi-coding-agent@${PI_VERSION}"
 
     - name: Setup Pi Configuration and Extensions
       shell: bash
       env:
         ACTION_PATH: ${{ github.action_path }}
       run: |
-        mkdir -p ~/.pi/agent/extensions
-        CONFIG_DIR="${ACTION_PATH}/pi-config"
-        if [ -d "$CONFIG_DIR" ]; then
-          cp -r "$CONFIG_DIR/"* ~/.pi/agent/
-        fi
+        node "${ACTION_PATH}/scripts/setup-pi-config.mjs"
 
     - name: Run Pi Agent
       id: run_pi
       shell: bash
       env:
-        CI: "true"
-        GIT_PAGER: "cat"
-        PAGER: "cat"
-        GH_PROMPT_DISABLED: "1"
+        ACTION_PATH: ${{ github.action_path }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_SYSTEM_PROMPT: ${{ inputs.system_prompt }}
         INPUT_APPEND_SYSTEM_PROMPT: ${{ inputs.append_system_prompt }}
@@ -127,71 +160,8 @@ runs:
         INPUT_PROMPT_TEMPLATE: ${{ inputs.prompt_template }}
         INPUT_MODE: ${{ inputs.mode }}
         INPUT_CONTEXT_FILES: ${{ inputs.context_files }}
+        INPUT_RESULT_FILE: ${{ inputs.result_file }}
+        INPUT_WRITE_SUMMARY: ${{ inputs.write_summary }}
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        # 1. 基础运行参数：非交互式 + 信任项目文件
-        PI_ARGS=("-p" "--approve")
-
-        # 3. 动态追加 Provider 与 Model
-        [ -n "$INPUT_PROVIDER" ] && PI_ARGS+=("--provider" "$INPUT_PROVIDER")
-        [ -n "$INPUT_MODEL" ] && PI_ARGS+=("--model" "$INPUT_MODEL")
-        [ -n "$INPUT_THINKING" ] && PI_ARGS+=("--thinking" "$INPUT_THINKING")
-        [ -n "$INPUT_API_KEY" ] && PI_ARGS+=("--api-key" "$INPUT_API_KEY")
-
-        # 4. 动态追加工具白名单与权限
-        [ -n "$INPUT_TOOLS" ] && PI_ARGS+=("--tools" "$INPUT_TOOLS")
-        [ -n "$INPUT_EXCLUDE_TOOLS" ] && PI_ARGS+=("--exclude-tools" "$INPUT_EXCLUDE_TOOLS")
-        [ "$INPUT_NO_BUILTIN_TOOLS" = "true" ] && PI_ARGS+=("--no-builtin-tools")
-        [ "$INPUT_NO_TOOLS" = "true" ] && PI_ARGS+=("--no-tools")
-
-        # 5. 动态追加系统提示词与输出模式（自动识别内联文本或文件路径）
-        ACTUAL_SYSTEM_PROMPT="$INPUT_SYSTEM_PROMPT"
-        if [ -n "$INPUT_SYSTEM_PROMPT" ] && [ -f "$INPUT_SYSTEM_PROMPT" ]; then
-          ACTUAL_SYSTEM_PROMPT=$(cat "$INPUT_SYSTEM_PROMPT")
-        fi
-        [ -n "$ACTUAL_SYSTEM_PROMPT" ] && PI_ARGS+=("--system-prompt" "$ACTUAL_SYSTEM_PROMPT")
-
-        ACTUAL_APPEND_SYSTEM_PROMPT="$INPUT_APPEND_SYSTEM_PROMPT"
-        if [ -n "$INPUT_APPEND_SYSTEM_PROMPT" ] && [ -f "$INPUT_APPEND_SYSTEM_PROMPT" ]; then
-          ACTUAL_APPEND_SYSTEM_PROMPT=$(cat "$INPUT_APPEND_SYSTEM_PROMPT")
-        fi
-        [ -n "$ACTUAL_APPEND_SYSTEM_PROMPT" ] && PI_ARGS+=("--append-system-prompt" "$ACTUAL_APPEND_SYSTEM_PROMPT")
-
-        [ -n "$INPUT_PROMPT_TEMPLATE" ] && PI_ARGS+=("--prompt-template" "$INPUT_PROMPT_TEMPLATE")
-        [ -n "$INPUT_MODE" ] && PI_ARGS+=("--mode" "$INPUT_MODE")
-
-        # 6. 解析主提示词（自动识别内联文本或文件路径）
-        ACTUAL_PROMPT="$INPUT_PROMPT"
-        if [ -n "$INPUT_PROMPT" ] && [ -f "$INPUT_PROMPT" ]; then
-          ACTUAL_PROMPT=$(cat "$INPUT_PROMPT")
-        fi
-
-        # 7. 构建文件输入列表
-        FILES=()
-        if [ -n "$INPUT_CONTEXT_FILES" ]; then
-          for file in $INPUT_CONTEXT_FILES; do
-            if [ -f "$file" ]; then
-              FILES+=("@$file")
-            fi
-          done
-        fi
-
-        # 8. 执行 Pi：stdout 写入 Step Summary，stderr 终端输出
-        RESULT_FILE=$(mktemp "${RUNNER_TEMP:-/tmp}/pi-result.XXXXXX")
-        echo "Executing: pi ${PI_ARGS[*]} ${FILES[*]} [prompt]"
-        set +e
-        pi "${PI_ARGS[@]}" "${FILES[@]}" "$ACTUAL_PROMPT" < /dev/null | tee "$RESULT_FILE"
-        EXIT_CODE=${PIPESTATUS[0]}
-        set -e
-        if [ "$EXIT_CODE" -ne 0 ]; then
-          echo "Pi execution exited with code $EXIT_CODE"
-          rm -f "$RESULT_FILE"
-          exit "$EXIT_CODE"
-        fi
-
-        # 9. 写入 GitHub Step Summary
-        echo "## Pi Agent Output" >> "$GITHUB_STEP_SUMMARY"
-        echo "" >> "$GITHUB_STEP_SUMMARY"
-        cat "$RESULT_FILE" >> "$GITHUB_STEP_SUMMARY"
-        rm -f "$RESULT_FILE"
-    
+        node "${ACTION_PATH}/scripts/run-agent.mjs"

@@ -1,6 +1,6 @@
 # 超大型 PR 审查（本地比对方案）
 
-面向超大型 PR（改动数千至数万行）的代码审查方案。核心思路：**在 Runner 内用 checkout 下来的全量代码做 git 比对，绕开 GitHub diff API 的 20000 行上限**。
+面向超大型 PR（改动数千至数万行）的代码审查方案。核心思路：**在 Runner 内用 checkout 下来的全量代码做 git 比对，绕开 GitHub diff API 的 20000 行上限**，并通过子 Action `devcxl/agentic-action/pr-review` 提供开箱即用的一站式体验。
 
 ## 为什么不用 `gh pr diff`
 
@@ -11,53 +11,59 @@ HTTP 406 Not Acceptable
 {"message":"Sorry, the diff exceeded the maximum number of lines (20000)","errors":[{"resource":"PullRequest","field":"diff","code":"too_large"}]}
 ```
 
-这不是限流，会重试也没用；很多审查工具在大 PR 上会因此静默失败或直接中断。用本地 `git diff <merge-base> <head>` 没有这个限制。
+这不是限流，重试也没用；用本地 `git diff <merge-base> <head>` 没有这个限制。
 
-## 组成
+## 架构组成
 
 | 文件 | 作用 |
 | --- | --- |
+| `pr-review/action.yml` | 子 Action 入口：封装环境安装、上下文构建、只读审查、Marker 回评、Artifact 上传与门禁 |
+| `scripts/pr-review/run-review.mjs` | PR 审查全链路 Node 编排器 |
 | `scripts/pr-review/build-context.mjs` | 计算 merge-base、生成逐文件 patch、分块、导出 base 快照与 manifest |
-| `scripts/pr-review/render-comment.mjs` | 把 Agent 的结构化 JSON 渲染成 PR 评论 Markdown，并实现 `--fail-on` 门禁 |
-| `.github/prompts/pr-review.md` | 审查提示词与输出契约（含安全边界与分块读取方法） |
-| `.github/workflows/pr-review.yml` | 完整审查工作流：全量 checkout → 生成上下文 → Pi 审查 → 回评 → 门禁 → artifact |
-| `.github/workflows/pr-review-selftest.yml` | 脚本自检（无需 secrets，不调用模型） |
+| `scripts/pr-review/render-comment.mjs` | 从 Agent 输出中提取并归一化 JSON 报告、渲染评论 Markdown、判定 `--fail-on` 门禁 |
+| `scripts/pr-review/publish-comment.mjs` | 基于 `<!-- pi-review:begin -->` HTML Marker 的精准幂等评论发布器 |
+| `.github/prompts/pr-review.md` | 内置审查系统提示词与 JSON 输出契约 |
 
 ## 关键设计点
 
-**比对基准必须是 merge-base（三点）**。用 `git diff base head` 会在 PR 落后于主分支时把主分支的新提交显示成 PR 的"反向修改"。脚本一律使用 `git merge-base <base> <head>` 的结果作为 diff 左端。
+1. **比对基准必须是 merge-base（三点）**：脚本一律使用 `git merge-base <base> <head>` 的结果作为 diff 左端，避免在 PR 落后于主分支时把主分支的新提交当成 PR 的反向修改。
+2. **必须 `fetch-depth: 0`**：浅克隆无法计算 merge-base；脚本会检测并直接报错，避免静默产出错误结论。
+3. **上下文生成在工作区外（`${RUNNER_TEMP}/pi-review-context`）**：避免 `base/` 快照和 `patches/` 污染工作区，也避免 Agent 在工作区执行 `grep` / `find` 时误扫入旧版本快照文件。
+4. **纯只读工具与 Token 物理隔离**：
+   - 改动前版本已预导出到 `<CONTEXT_DIR>/base/`，Agent 仅需只读工具（`read,grep,find,ls`）即可完成前后对照。
+   - Agent 直接在回复中输出 JSON 报告并由外层进程提取，无需开启 `write` 工具，也无需开启 `bash` 工具。
+   - 外层进程在启动只读 `pi` 子进程时自动从环境变量中剔除 `GH_TOKEN` / `GITHUB_TOKEN`，彻底杜绝恶意 PR 通过 Prompt Injection 篡改工作区或窃取 Token。
+5. **基于 HTML Marker 的真幂等回评**：`publish-comment.mjs` 通过 GitHub API 查找包含 `<!-- pi-review:begin -->` 的评论并 `PATCH` 更新，绝不会误覆盖同仓库其他 GitHub Actions Bot 发布的评论。
+6. **门禁在回评之后**：先发布审查评论并上传 Artifact，最后才根据 `fail_on` 退出码决定步骤成败。
 
-**必须 `fetch-depth: 0`**。浅克隆无法计算 merge-base；脚本会检测并直接报错，避免静默产出错误结论。
+## 在外部仓库中使用
 
-**模型上下文预算靠确定性分块解决**。20k 行限制只约束 GitHub API，不约束模型上下文：十万行 diff 依然塞不进任何窗口。脚本先出 `--numstat` 清单（免费），排除 lockfile/生成物/二进制，按路径顺序切成 chunk（默认 1500 行 / 40KB），并要求 Agent 按 chunk 顺序推进。
+无需复制任何脚本或提示词文件，直接在目标仓库的 `.github/workflows/pr-review.yml` 中引用 `devcxl/agentic-action/pr-review@main`：
 
-**改动前版本预导出到 `review-context/base/`**，配合只读工具集就能完成前后对照，因此审查阶段不需要 `bash`，也就不会把 `GH_TOKEN` 暴露给一个正在阅读不可信 PR 内容的 Agent。
+```yaml
+steps:
+  - uses: actions/checkout@v4
+    with:
+      ref: refs/pull/${{ github.event.pull_request.number }}/head
+      fetch-depth: 0
 
-**输出契约化**。Agent 只写 `report.json`（severity/category/file/line/title/detail/suggestion），渲染与发布交给脚本，保证可测试、可幂等、可门禁。`coverage` 强制如实填写：只审了 2/14 个 chunk 就必须写明，避免"绿勾但零发现"的假通过。
+  - uses: devcxl/agentic-action/pr-review@main
+    with:
+      provider: 'half-cabbage'
+      model: 'minimax-m3'
+      fail_on: 'high'
+      exclude: '**/dist/**,**/vendor/**'
+    env:
+      HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
+      HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
+```
 
-**回评幂等**。评论用固定 HTML marker 包裹，配合 `gh pr comment --edit-last --create-if-none`，`synchronize` 时更新上一条而不是刷屏；workflow 侧用 `concurrency` 取消同 PR 的旧运行。
-
-**门禁在回评之后**。先留下审查结论再决定退出码，`--fail-on high` 命中时 job 失败但评论已发布。
-
-## 使用方式
-
-复制 `scripts/pr-review/` 与 `.github/prompts/pr-review.md` 到目标仓库，并把 workflow 中的 `uses: ./` 换成 `uses: devcxl/agentic-action@<ref>`，然后在仓库配置 `HALF_CABBAGE_BASE_URL` / `HALF_CABBAGE_API_KEY`（可选 `EXA_API_KEY`）。
-
-只跑上下文生成（不调用模型）：
+## 独立运行上下文构建脚本（本地调试）
 
 ```bash
 node scripts/pr-review/build-context.mjs \
   --base "$(git rev-parse origin/main)" \
-  --out .review-context \
+  --out /tmp/review-context \
   --base-snapshot \
   --exclude '**/package-lock.json,**/dist/**'
 ```
-
-`manifest.json` 是审查的事实来源：`files[]`（含 rename 的 `oldPath` 与 patch 路径）、`chunks[]`、`skipped`（排除原因）、`totals`。完整参数见 `node scripts/pr-review/build-context.mjs --help`。
-
-## 已知限制
-
-- **fork PR 不会审查**：`pull_request` 事件下 token 只读且无 secrets，工作流只生成上下文并跳过模型与回评。若必须审查 fork PR 并回评，需改用 `pull_request_target` + `workflow_run` 两段式，保持审查段无 secrets、只读，切勿把 fork 代码交给有写权限的 job。
-- **超大改动仍未覆盖完**：分块解决的是"能不能读"，不是"AI 会不会读完"。预算不足时靠 `coverage` 如实暴露，配合 `workflow_dispatch` 的 `max_chunks` 分批推进。
-- **inline comment 未实现**：本方案只发单条 summary 评论。行级评论需要把 head 行号映射到 PR diff 的 `line+side`，在排除文件与超大 diff 场景下容易 422，留待后续。
-- **`write` 工具仍有仓库写权限**：Agent 只被要求写 `report.json`，但工具层面无法限制路径；如需更严，可改为从 stdout 解析 JSON。

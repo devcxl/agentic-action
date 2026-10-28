@@ -17,6 +17,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 
+import {
+  DEFAULT_EXCLUDES,
+  globToRegExp,
+  matchesAny,
+  parseNameStatusZ,
+  parseNumstatZ,
+} from "./git-diff-utils.mjs";
+
 const log = (msg) => console.error(`[build-context] ${msg}`);
 
 const USAGE = `用法: node build-context.mjs --base <sha|ref> [options]
@@ -147,8 +155,6 @@ function splitList(value) {
 // git 工具
 // ---------------------------------------------------------------------------
 
-const NUL = String.fromCharCode(0);
-
 /** git 命令执行目录，由 --repo 指定（默认为当前目录） */
 let repoCwd = process.cwd();
 
@@ -166,107 +172,6 @@ function git(args, { allowFail = false } = {}) {
     throw new Error(`git ${args.join(" ")} 失败: ${stderr || error.message}`);
   }
 }
-
-/** 解析 git diff --numstat -z 输出。
- *  普通文件：`<added>\t<deleted>\t<path>\0`
- *  重命名/复制：`<added>\t<deleted>\t\0<oldPath>\0<newPath>\0`（第三字段为空，路径拆成两个 token）
- */
-function parseNumstatZ(text) {
-  const tokens = text.split(NUL);
-  const entries = [];
-  let i = 0;
-  while (i < tokens.length) {
-    const token = tokens[i];
-    if (!token) { i++; continue; }
-    const parts = token.split("\t");
-    if (parts.length < 2) { i++; continue; }
-    const [added, deleted] = parts;
-    const path = parts.length > 2 ? parts.slice(2).join("\t") : "";
-    if (path) {
-      entries.push({ added, deleted, path, oldPath: null });
-      i++;
-      continue;
-    }
-    const oldPath = tokens[i + 1];
-    const newPath = tokens[i + 2];
-    if (oldPath && newPath) entries.push({ added, deleted, path: newPath, oldPath });
-    i += 3;
-  }
-  return entries;
-}
-
-/** 解析 git diff --name-status -z 输出，返回 path -> {status, oldPath} 映射 */
-function parseNameStatusZ(text) {
-  const tokens = text.split(NUL).filter((token) => token !== "");
-  const map = new Map();
-  let i = 0;
-  while (i < tokens.length) {
-    const status = tokens[i++];
-    if (status[0] === "R" || status[0] === "C") {
-      const oldPath = tokens[i++];
-      const newPath = tokens[i++];
-      if (newPath !== undefined) map.set(newPath, { status, oldPath });
-    } else {
-      const path = tokens[i++];
-      if (path !== undefined) map.set(path, { status, oldPath: null });
-    }
-  }
-  return map;
-}
-
-// ---------------------------------------------------------------------------
-// glob 匹配（支持 ** / * / ? / {a,b}，以 '/' 结尾表示目录前缀）
-// ---------------------------------------------------------------------------
-
-function globToRegExp(pattern) {
-  let p = pattern.trim().replace(/^\.\//, "");
-  if (p.endsWith("/")) p = `${p}**`;
-  let re = "";
-  for (let i = 0; i < p.length; i++) {
-    const ch = p[i];
-    if (ch === "*") {
-      if (p[i + 1] === "*") {
-        // `**/` 匹配任意层级（含零层），单独的 `**` 匹配任意字符
-        if (p[i + 2] === "/") { re += "(?:.*/)?"; i += 2; } else { re += ".*"; i += 1; }
-      } else {
-        re += "[^/]*";
-      }
-    } else if (ch === "?") {
-      re += "[^/]";
-    } else if (ch === "{") {
-      const end = p.indexOf("}", i);
-      if (end === -1) { re += "\\{"; } else {
-        const options = p.slice(i + 1, end).split(",").map((o) => o.replace(/[.+^${}()|[\]\\]/g, "\\$&"));
-        re += `(?:${options.join("|")})`;
-        i = end;
-      }
-    } else {
-      re += ch.replace(/[.+^${}()|[\]\\]/g, "\\$&");
-    }
-  }
-  return new RegExp(`^${re}$`);
-}
-
-function matchesAny(path, regexps) {
-  return regexps.some((re) => re.test(path));
-}
-
-// lockfile / 生成物等默认排除项，避免噪音淹没真实改动
-const DEFAULT_EXCLUDES = [
-  "**/package-lock.json",
-  "**/pnpm-lock.yaml",
-  "**/yarn.lock",
-  "**/bun.lockb",
-  "**/Cargo.lock",
-  "**/poetry.lock",
-  "**/go.sum",
-  "**/composer.lock",
-  "**/*.min.js",
-  "**/*.min.css",
-  "**/*.map",
-  "**/__snapshots__/**",
-  "**/*.snap",
-];
 
 // ---------------------------------------------------------------------------
 // 主流程
@@ -524,11 +429,12 @@ function renderContextDoc(manifest, outDir) {
   if (totals.oversizedFiles > 0) lines.push(`- 需分页读取的大 patch: ${totals.oversizedFiles}（仍已落盘，用 read 的 offset/limit）`);
   lines.push("");
   lines.push("## 如何读取", "");
-  lines.push("- 每个文件的 patch 位于 `patches/` 目录，路径见 `manifest.json` 的 `files[].patch`。");
+  lines.push(`- 上下文目录: \`${outDir}\``);
+  lines.push(`- 每个文件的 patch 位于 \`${join(outDir, "patches")}\` 目录，相对路径见 \`manifest.json\` 的 \`files[].patch\`。`);
   lines.push("- patch 文件均小于 read 工具单次上限；大 patch 请用 read 的 offset/limit 分页读取。");
   lines.push("- 需要理解上下文时，直接 read 工作区中的完整文件（工作区即 PR head 版本）。");
   if (manifest.baseSnapshot && manifest.baseSnapshot.files > 0) {
-    lines.push(`- base 版本的改动文件已导出到 \`base/\` 目录（${manifest.baseSnapshot.files} 个文件），可直接 read 对照改动前后差异。`);
+    lines.push(`- base 版本的改动文件已导出到 \`${join(outDir, "base")}\` 目录（${manifest.baseSnapshot.files} 个文件），可直接 read 对照改动前后差异。`);
     if (manifest.baseSnapshot.truncated) lines.push("- 注意：base 快照超出字节预算被截断，部分文件需自行用 git 查看。");
   }
   lines.push("- 需要查看未导出或超限的内容时，可用 `git show <sha>:<path>` / `git diff <sha> <sha>`（sha 见上方 base/head）。");

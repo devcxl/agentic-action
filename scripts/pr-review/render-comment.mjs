@@ -22,7 +22,8 @@ const USAGE = `用法: node render-comment.mjs --report <report.json> [options]
 
 把审查结果 JSON 渲染为 PR 评论 Markdown。
 
-  --report <path>        Agent 产出的 report.json（必填）
+  --report <path>        审查报告文件路径（JSON 或包含 JSON 的 Agent 原始输出）
+  --extract-out <path>   将提取并归一化后的纯 JSON 写入指定路径
   --out <path>           同时写入 Markdown 文件
   --fail-on <level>      none|low|medium|high|critical（默认 none）命中时退出码 1
   --max-bytes <n>        输出字节上限，默认 64512（GitHub 单条评论上限 65536）
@@ -47,10 +48,11 @@ function parseArgs(argv) {
     process.stdout.write(USAGE);
     process.exit(0);
   }
-  const args = { report: "", out: "", maxBytes: COMMENT_LIMIT - 1024, failOn: "none", marker: "pi-review" };
+  const args = { report: "", extractOut: "", out: "", maxBytes: COMMENT_LIMIT - 1024, failOn: "none", marker: "pi-review" };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--report") args.report = argv[++i];
+    else if (arg === "--extract-out") args.extractOut = argv[++i];
     else if (arg === "--out") args.out = argv[++i];
     else if (arg === "--max-bytes") args.maxBytes = Number(argv[++i]);
     else if (arg === "--fail-on") args.failOn = argv[++i];
@@ -64,8 +66,99 @@ function parseArgs(argv) {
   return args;
 }
 
-function normalizeReport(raw) {
-  const report = typeof raw === "string" ? JSON.parse(raw) : raw;
+/**
+ * 从字符串中提取 JSON 对象：
+ * 1. 直接 JSON.parse
+ * 2. 提取 ```json ... ``` 或 ``` ... ``` 代码块（取最后一个合法的含 findings/summary 的对象）
+ * 3. 扫描首尾平衡的 `{ ... }` 子串
+ */
+export function extractJsonReport(rawText) {
+  const trimmed = String(rawText ?? "").trim();
+  if (!trimmed) throw new Error("报告内容为空");
+
+  const isReportShape = (obj) =>
+    obj &&
+    typeof obj === "object" &&
+    !Array.isArray(obj) &&
+    (Array.isArray(obj.findings) || typeof obj.summary === "string" || typeof obj.verdict === "string");
+
+  try {
+    const direct = JSON.parse(trimmed);
+    if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct;
+  } catch {
+    // 继续尝试代码块与大括号提取
+  }
+
+  const fenceRegex = /```(?:json)?\s*([\s\S]*?)```/gi;
+  const candidates = [];
+  let match;
+  while ((match = fenceRegex.exec(trimmed)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim());
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        candidates.push(parsed);
+      }
+    } catch {
+      // 忽略非 JSON 代码块
+    }
+  }
+  for (let i = candidates.length - 1; i >= 0; i--) {
+    if (isReportShape(candidates[i])) return candidates[i];
+  }
+  if (candidates.length > 0) return candidates[candidates.length - 1];
+
+  // 平衡大括号扫描（从后往前找最后一个完整 JSON 对象）
+  const braceBlocks = [];
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < trimmed.length; i++) {
+    const ch = trimmed[i];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === "\\") {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === "}") {
+      depth--;
+      if (depth === 0 && start !== -1) {
+        braceBlocks.push(trimmed.slice(start, i + 1));
+        start = -1;
+      } else if (depth < 0) {
+        depth = 0;
+        start = -1;
+      }
+    }
+  }
+
+  for (let i = braceBlocks.length - 1; i >= 0; i--) {
+    try {
+      const parsed = JSON.parse(braceBlocks[i]);
+      if (isReportShape(parsed)) return parsed;
+    } catch {
+      // 忽略非 JSON 片段
+    }
+  }
+
+  throw new Error("无法从输出中解析有效的 JSON 审查报告");
+}
+
+export function normalizeReport(raw) {
+  const report = typeof raw === "string" ? extractJsonReport(raw) : raw;
   if (!report || typeof report !== "object") throw new Error("report 必须是 JSON 对象");
   const findings = Array.isArray(report.findings) ? report.findings : [];
   return {
@@ -171,6 +264,9 @@ function main() {
   if (!existsSync(args.report)) throw new Error(`报告文件不存在: ${args.report}（Agent 可能未按契约输出）`);
 
   const report = normalizeReport(readFileSync(args.report, "utf8"));
+  if (args.extractOut) {
+    writeFileSync(args.extractOut, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  }
   const markdown = truncateToLimit(render(report, args.marker), args.maxBytes);
 
   if (args.out) writeFileSync(args.out, markdown, "utf8");
@@ -190,9 +286,11 @@ function main() {
   return 0;
 }
 
-try {
-  process.exitCode = main();
-} catch (error) {
-  console.error(`[render-comment] 错误: ${error.message}`);
-  process.exitCode = 2;
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    process.exitCode = main();
+  } catch (error) {
+    console.error(`[render-comment] 错误: ${error.message}`);
+    process.exitCode = 2;
+  }
 }
