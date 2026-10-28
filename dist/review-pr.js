@@ -8546,6 +8546,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -8896,13 +8897,15 @@ function collectSnapshotInventory(options) {
   const outDir = resolve(repoCwd, options.outDir);
   const patchDir = join(outDir, "patches");
   const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetAbs = resolve(repoCwd, rawTarget);
-  const relCheck = relative(repoCwd, targetAbs);
-  if (relCheck.startsWith("..") || resolve(repoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
-  }
-  if (!existsSync(targetAbs)) {
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  if (!existsSync(targetCandidate)) {
     throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (relCheck.startsWith("..") || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
   }
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
   const maxFiles = options.maxFiles ?? 0;
@@ -8915,18 +8918,20 @@ function collectSnapshotInventory(options) {
   const extraExcludeRes = userExcludes.map(globToRegExp);
   const includeRes = userIncludes.map(globToRegExp);
   const skipped = { excluded: [], binary: [], empty: [] };
-  const absFiles = listFilesRecursively(repoCwd, targetAbs, skipped);
+  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
   const files = [];
   const fileContents = /* @__PURE__ */ new Map();
   let totalSnapshotBytes = 0;
   for (const absPath of absFiles) {
-    const path = relative(repoCwd, absPath).split("\\").join("/");
+    const path = relative(realRepoCwd, absPath).split("\\").join("/");
+    const targetRelPath = relative(targetAbs, absPath).split("\\").join("/") || path;
+    const matchesPathOrTargetRel = (patterns) => matchesAny(path, patterns) || targetRelPath !== path && matchesAny(targetRelPath, patterns);
     let excludedBy = null;
-    if (includeRes.length > 0 && !matchesAny(path, includeRes)) {
+    if (includeRes.length > 0 && !matchesPathOrTargetRel(includeRes)) {
       excludedBy = "not-in-include-list";
-    } else if (matchesAny(path, excludeRes)) {
+    } else if (matchesPathOrTargetRel(excludeRes)) {
       excludedBy = "matches-exclude";
-    } else if (extraExcludeRes.length > 0 && matchesAny(path, extraExcludeRes)) {
+    } else if (extraExcludeRes.length > 0 && matchesPathOrTargetRel(extraExcludeRes)) {
       excludedBy = "matches-exclude";
     }
     if (excludedBy) {
@@ -8988,6 +8993,9 @@ function collectSnapshotInventory(options) {
     files.length = maxFiles;
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
+  if (files.length === 0) {
+    throw new Error(`target_path (${rawTarget}) \u4E0B\u672A\u627E\u5230\u53EF\u5BA1\u8BA1\u7684\u6E90\u7801\u6587\u4EF6`);
+  }
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
   let index = 0;
@@ -9336,7 +9344,7 @@ function accumulateUsage(target, rawUsage) {
 }
 function isTransientErrorMessage(msg) {
   if (!msg) return false;
-  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up/i.test(
+  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up|invalid 'authorization' header or token/i.test(
     msg
   );
 }
@@ -9379,7 +9387,7 @@ async function runPiSubprocess(sandbox, options = {}) {
       const errText = typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText) || usage.totalTokens > 0 && /\b401\b/.test(errText)) {
+        if (isTransientErrorMessage(errText)) {
           transientError = errText;
         }
       }
@@ -10289,7 +10297,7 @@ async function resolveIssuePrLinkage(params) {
 }
 
 // packages/actions/src/review-pr-runner.ts
-import { existsSync as existsSync4, readFileSync as readFileSync4, writeFileSync as writeFileSync3 } from "node:fs";
+import { existsSync as existsSync4, readFileSync as readFileSync4, statSync as statSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { join as join4, relative as relative2, resolve as resolve4 } from "node:path";
 function resolveSubmitReviewExtensionPath(actionRoot) {
   const candidates = [
@@ -10329,11 +10337,18 @@ async function executeReviewChunks(params) {
     logger,
     sleepImpl
   } = params;
-  const defaultPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
+  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
+  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve4(actionRoot, defaultPromptRel);
   const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
-  const isPromptInsideActionRoot = !relToActionRoot.startsWith("..") && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
-  const baseReviewContract = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) ? readFileSync4(resolvedPromptPath, "utf8") : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const isPromptInsideActionRoot = Boolean(relToActionRoot) && !relToActionRoot.startsWith("..") && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
+  const isPromptValidFile = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) && statSync2(resolvedPromptPath).isFile();
+  if (explicitPromptRel && !isPromptValidFile) {
+    throw new Error(
+      `\u6307\u5B9A\u7684\u9ED8\u8BA4\u63D0\u793A\u8BCD\u6587\u4EF6\u4E0D\u5B58\u5728\u6216\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`
+    );
+  }
+  const baseReviewContract = isPromptValidFile ? readFileSync4(resolvedPromptPath, "utf8") : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt ? `${baseReviewContract}
 

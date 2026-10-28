@@ -76,7 +76,7 @@ function accumulateUsage(target: AgentUsage, rawUsage: unknown): void {
 
 export function isTransientErrorMessage(msg?: string): boolean {
   if (!msg) return false;
-  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up/i.test(
+  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up|invalid 'authorization' header or token/i.test(
     msg,
   );
 }
@@ -144,10 +144,7 @@ export async function runPiSubprocess(
         typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (
-          isTransientErrorMessage(errText) ||
-          (usage.totalTokens > 0 && /\b401\b/.test(errText))
-        ) {
+        if (isTransientErrorMessage(errText)) {
           transientError = errText;
         }
       }

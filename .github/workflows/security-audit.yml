@@ -42,10 +42,10 @@ on:
       max_chunks:
         description: 'Max chunks to audit (0 = unlimited)'
         required: false
-        default: '5'
+        default: '0'
 
 concurrency:
-  group: security-audit-${{ github.workflow }}-${{ github.ref }}
+  group: security-audit-${{ github.workflow }}-${{ github.ref }}-${{ inputs.target_repo || 'self' }}-${{ inputs.target_path || 'root' }}
   cancel-in-progress: true
 
 permissions:
@@ -107,6 +107,6 @@ jobs:
           audit_mode: ${{ inputs.audit_mode || 'codebase' }}
           base_sha: ${{ inputs.base_sha }}
           target_path: ${{ steps.target.outputs.effective_path }}
-          max_chunks: ${{ inputs.max_chunks || '5' }}
+          max_chunks: ${{ inputs.max_chunks || '0' }}
           fail_on: ${{ inputs.fail_on || 'high' }}
           exclude: '**/dist/**,**/node_modules/**'

@@ -65,6 +65,8 @@ jobs:
           thinking: 'low'
           pr_number: ${{ github.event.pull_request.number || inputs.pr_number }}
           max_chunks: ${{ inputs.max_chunks || '0' }}
+          max_chunk_lines: '3000'
+          max_chunk_bytes: '81920'
           link_issues: ${{ inputs.link_issues || 'true' }}
           include_issue_body: ${{ inputs.include_issue_body || 'false' }}
           triage_config: '.github/triage.yml'

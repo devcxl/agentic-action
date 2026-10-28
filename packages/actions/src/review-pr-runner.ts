@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type {
   AgentSpec,
@@ -92,17 +92,26 @@ export async function executeReviewChunks(params: {
     sleepImpl,
   } = params;
 
-  const defaultPromptRel =
-    (env.INPUT_DEFAULT_PROMPT_FILE || ".github/prompts/pr-review.md").trim();
+  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
+  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
   const relToActionRoot = relative(actionRoot, resolvedPromptPath);
   const isPromptInsideActionRoot =
+    Boolean(relToActionRoot) &&
     !relToActionRoot.startsWith("..") &&
     resolve(actionRoot, relToActionRoot) === resolvedPromptPath;
-  const baseReviewContract =
-    isPromptInsideActionRoot && existsSync(resolvedPromptPath)
-      ? readFileSync(resolvedPromptPath, "utf8")
-      : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const isPromptValidFile =
+    isPromptInsideActionRoot &&
+    existsSync(resolvedPromptPath) &&
+    statSync(resolvedPromptPath).isFile();
+  if (explicitPromptRel && !isPromptValidFile) {
+    throw new Error(
+      `指定的默认提示词文件不存在或超出 Action 目录边界: ${explicitPromptRel}`,
+    );
+  }
+  const baseReviewContract = isPromptValidFile
+    ? readFileSync(resolvedPromptPath, "utf8")
+    : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt
     ? `${baseReviewContract}\n\n${userAppendPrompt}`

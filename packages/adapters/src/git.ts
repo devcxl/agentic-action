@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -482,13 +483,15 @@ export function collectSnapshotInventory(
   const outDir = resolve(repoCwd, options.outDir);
   const patchDir = join(outDir, "patches");
   const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetAbs = resolve(repoCwd, rawTarget);
-  const relCheck = relative(repoCwd, targetAbs);
-  if (relCheck.startsWith("..") || resolve(repoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
-  }
-  if (!existsSync(targetAbs)) {
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  if (!existsSync(targetCandidate)) {
     throw new Error(`target_path 不存在: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (relCheck.startsWith("..") || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
   }
 
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
@@ -504,19 +507,27 @@ export function collectSnapshotInventory(
   const includeRes = userIncludes.map(globToRegExp);
 
   const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
-  const absFiles = listFilesRecursively(repoCwd, targetAbs, skipped);
+  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
   const files: DiffFileEntry[] = [];
   const fileContents = new Map<string, string>();
   let totalSnapshotBytes = 0;
 
   for (const absPath of absFiles) {
-    const path = relative(repoCwd, absPath).split("\\").join("/");
+    const path = relative(realRepoCwd, absPath).split("\\").join("/");
+    const targetRelPath = relative(targetAbs, absPath).split("\\").join("/") || path;
+    const matchesPathOrTargetRel = (patterns: RegExp[]): boolean =>
+      matchesAny(path, patterns) ||
+      (targetRelPath !== path && matchesAny(targetRelPath, patterns));
+
     let excludedBy: string | null = null;
-    if (includeRes.length > 0 && !matchesAny(path, includeRes)) {
+    if (includeRes.length > 0 && !matchesPathOrTargetRel(includeRes)) {
       excludedBy = "not-in-include-list";
-    } else if (matchesAny(path, excludeRes)) {
+    } else if (matchesPathOrTargetRel(excludeRes)) {
       excludedBy = "matches-exclude";
-    } else if (extraExcludeRes.length > 0 && matchesAny(path, extraExcludeRes)) {
+    } else if (
+      extraExcludeRes.length > 0 &&
+      matchesPathOrTargetRel(extraExcludeRes)
+    ) {
       excludedBy = "matches-exclude";
     }
     if (excludedBy) {
@@ -582,6 +593,10 @@ export function collectSnapshotInventory(
     files.length = maxFiles;
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
+
+  if (files.length === 0) {
+    throw new Error(`target_path (${rawTarget}) 下未找到可审计的源码文件`);
+  }
 
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });

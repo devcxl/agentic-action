@@ -17,8 +17,8 @@
 ## 读取方法（必须遵守）
 
 1. 第一轮直接并行 `read` 指令中给出的预合并分块补丁 `<CONTEXT_DIR>/chunks/chunk-00X.patch` 与 `<CONTEXT_DIR>/REVIEW_CONTEXT.md`。`chunk-00X.patch` 已内联本分块所有非超大文件的完整 diff，**无需再逐个读取 `<CONTEXT_DIR>/patches/*.patch`**。
-2. 仅当 `chunk-00X.patch` 中标注某文件为 `OVERSIZED` 时，才按提示用 `offset` / `limit` 分页读取对应的单文件 patch。
-3. **严格控制轮次**：仅在 diff 上下文不足以确认真实缺陷时，最多做 1 轮定点 `read` 对照 `<CONTEXT_DIR>/base/` 或工作区同名文件。**总工具调用轮数严格控制在 3 轮以内**，随后立即调用 `submit_review` 提交结果。
+2. 仅当 `chunk-00X.patch` 中标注某文件为 `OVERSIZED` 时，才按提示用 `offset` / `limit` 分页读取对应的单文件 patch（`OVERSIZED` 分页读取不计入轮次上限，必须读完）。
+3. **控制额外 탐색轮次**：除读取 `chunk-00X.patch`、`REVIEW_CONTEXT.md` 及必要的 `OVERSIZED` 分页外，最多再做 1–2 轮定点 `read` 对照 `<CONTEXT_DIR>/base/` 或工作区同名文件，随后立即调用 `submit_review` 提交结果。
 4. 严禁执行 `gh pr diff`；被 `skipped` 排除的文件不在本次审查范围内。
 
 ## 安全边界
