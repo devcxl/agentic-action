@@ -1,4 +1,4 @@
-# Pi Coding Agent Action (v2)
+# Pi Coding Agent Action
 
 基于 Pi Coding Agent 与 TypeSafe Jev 的 GitHub Composite Action 套件。提供**四入口架构**：
 - `devcxl/agentic-action`：安全、可验证的**通用 AI Agent 执行器**（显式 `CapabilityPolicy`、环境变量白名单、输出脱敏、二进制缓存）。
@@ -7,8 +7,9 @@
 - `devcxl/agentic-action/triage`：**基于 TypeSafe Jev（System One 判别式模型）的 Issue 自动分类子 Action**（白名单与校准置信度门限校验、低置信度安全降级、幂等打标）。
 
 > **版本与迁移说明**：
-> - `@v1`（及 `@v1.0.0`）已冻结旧版契约。
-> - `@v2` / `@v2.0.0` / `@main` 采用 v2 架构（见 [architecture-v2.md](docs/architecture-v2.md) 与 [triage-design.md](docs/triage-design.md)）：默认开启 `--no-approve` 与 `--no-mcp`（不信任被审工作区 `.pi` 配置），退出码升级为正交枚举（`0` Ok、`10` GateFailed、`20` InvalidReport、`30` Infrastructure）。
+> - `@v1` / `@v1.0.0` / `@main` 均指向当前架构（见 [architecture-v2.md](docs/architecture-v2.md) 与 [triage-design.md](docs/triage-design.md)）：默认开启 `--no-approve` 与 `--no-mcp`（不信任被审工作区 `.pi` 配置），退出码为正交枚举（`0` Ok、`10` GateFailed、`20` InvalidReport、`30` Infrastructure）。
+> - `v1` 为移动的主版本别名，`v1.0.0` 为不可变的发布版本；生产环境建议固定到 `@v1.0.0`，避免后续发布改变行为。
+> - 早期以 `v1` / `v2` 双线路发布的 tag 已废弃并删除，旧 `v1` 契约不再提供。
 
 ---
 
@@ -31,7 +32,7 @@
 
 ### 场景 1：超大型 PR 代码审查与 Issue 联动（推荐）
 
-在 `.github/workflows/pr-review.yml` 中引用 `devcxl/agentic-action/pr-review@main`：
+在 `.github/workflows/pr-review.yml` 中引用 `devcxl/agentic-action/pr-review@v1.0.0`：
 
 ```yaml
 name: PR Review
@@ -62,7 +63,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Pi PR Review
-        uses: devcxl/agentic-action/pr-review@main
+        uses: devcxl/agentic-action/pr-review@v1.0.0
         with:
           provider: 'half-cabbage'
           model: 'minimax-m3'
@@ -80,7 +81,7 @@ jobs:
 
 ### 场景 2：Issue 自动分类（TypeSafe Jev + Verifier）
 
-在 `.github/workflows/triage.yml` 中引用 `devcxl/agentic-action/triage@main`（无需检出代码，无需启动 Pi 进程）：
+在 `.github/workflows/triage.yml` 中引用 `devcxl/agentic-action/triage@v1.0.0`（无需检出代码，无需启动 Pi 进程）：
 
 ```yaml
 name: Issue Triage
@@ -101,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Classify and Label Issue
-        uses: devcxl/agentic-action/triage@main
+        uses: devcxl/agentic-action/triage@v1.0.0
         with:
           typesafe_api_key: ${{ secrets.TYPESAFE_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
@@ -111,7 +112,7 @@ jobs:
 
 ### 场景 2.5：第三方代码库 / Vendor 目录安全审计（`security-audit`）
 
-在 `.github/workflows/security-audit.yml` 中引用 `devcxl/agentic-action/security-audit@main`，可直接审计检出的第三方仓库全量代码（`audit_mode: codebase`，无需 `base_sha` 或 PR）或审计 PR 中的第三方依赖变更（`audit_mode: diff`）：
+在 `.github/workflows/security-audit.yml` 中引用 `devcxl/agentic-action/security-audit@v1.0.0`，可直接审计检出的第三方仓库全量代码（`audit_mode: codebase`，无需 `base_sha` 或 PR）或审计 PR 中的第三方依赖变更（`audit_mode: diff`）：
 
 ```yaml
 name: Third-Party Security Audit
@@ -135,7 +136,7 @@ jobs:
           persist-credentials: false
 
       - name: Run Pi Third-Party Security Audit
-        uses: devcxl/agentic-action/security-audit@v2
+        uses: devcxl/agentic-action/security-audit@v1.0.0
         with:
           provider: 'half-cabbage'
           model: 'deepseek-v4.1-flash'
@@ -150,7 +151,7 @@ jobs:
 
 ### 场景 3：通用代码库分析与结构化 Output 消费
 
-使用根入口 `devcxl/agentic-action@main` 执行任意 Agent 任务：
+使用根入口 `devcxl/agentic-action@v1.0.0` 执行任意 Agent 任务：
 
 ```yaml
 name: Codebase Health Analysis
@@ -171,7 +172,7 @@ jobs:
 
       - name: Run Analysis
         id: analysis
-        uses: devcxl/agentic-action@main
+        uses: devcxl/agentic-action@v1.0.0
         with:
           model: 'openai/gpt-4o'
           tools: 'read,grep,find,ls'
