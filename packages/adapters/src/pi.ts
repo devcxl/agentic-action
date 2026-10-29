@@ -76,7 +76,7 @@ function accumulateUsage(target: AgentUsage, rawUsage: unknown): void {
 
 export function isTransientErrorMessage(msg?: string): boolean {
   if (!msg) return false;
-  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up|invalid 'authorization' header or token/i.test(
+  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up/i.test(
     msg,
   );
 }
@@ -378,17 +378,19 @@ export async function runPiWithRetry(
       return { result: lastResult, attempts: attempt, durationsMs };
     }
 
+    const isMissingRequiredTool = Boolean(
+      options.requiredTool &&
+        lastResult.exitCode === 0 &&
+        !lastResult.aborted &&
+        !lastResult.errorMessage,
+    );
+    // Missing requiredTool retry is capped at 1 retry (attempt <= 1) to avoid 4x LLM costs
     const isRetryable =
       !options.signal?.aborted &&
       !hasToolOutput &&
       (lastResult.timedOut ||
         Boolean(lastResult.transientError) ||
-        Boolean(
-          options.requiredTool &&
-            lastResult.exitCode === 0 &&
-            !lastResult.aborted &&
-            !lastResult.errorMessage,
-        ));
+        (isMissingRequiredTool && attempt <= 1));
 
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };

@@ -398,7 +398,7 @@ function accumulateUsage(target, rawUsage) {
 }
 function isTransientErrorMessage(msg) {
   if (!msg) return false;
-  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up|invalid 'authorization' header or token/i.test(
+  return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up/i.test(
     msg
   );
 }

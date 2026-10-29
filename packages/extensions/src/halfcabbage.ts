@@ -81,11 +81,20 @@ function getStoredAuth(): { key?: string; baseUrl?: string } {
   }
 }
 
+function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(timeoutMs);
+  if (!signal) return timeoutSignal;
+  if (typeof AbortSignal.any === "function") {
+    return AbortSignal.any([signal, timeoutSignal]);
+  }
+  return timeoutSignal;
+}
+
 /** 拉取 New API /v1/models 的模型 ID 列表，失败时抛错由调用方降级 */
-async function fetchModelIds(baseUrl: string, apiKey: string): Promise<string[]> {
+async function fetchModelIds(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: combineSignals(REQUEST_TIMEOUT_MS, signal),
   });
 
   if (!response.ok) {
@@ -105,13 +114,13 @@ async function fetchModelIds(baseUrl: string, apiKey: string): Promise<string[]>
 }
 
 /** 拉取 models.dev 元数据目录，任何失败都静默降级为空目录 */
-async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> {
+async function fetchModelsDevCatalog(signal?: AbortSignal): Promise<Record<string, ModelsDevModel>> {
   const url = process.env.MODELS_DEV_URL ?? "https://models.dev/api.json";
 
   try {
     const response = await fetch(url, {
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      signal: combineSignals(REQUEST_TIMEOUT_MS, signal),
     });
 
     if (!response.ok) return {};
@@ -135,11 +144,11 @@ let inFlightModelIdsKey: string | null = null;
 let inFlightModelIds: Promise<string[] | null> | null = null;
 let inFlightCatalog: Promise<Record<string, ModelsDevModel>> | null = null;
 
-function requestModelIds(baseUrl: string, apiKey: string): Promise<string[] | null> {
+function requestModelIds(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<string[] | null> {
   const key = `${baseUrl}|${apiKey.slice(-6)}`;
   if (!inFlightModelIds || inFlightModelIdsKey !== key) {
     inFlightModelIdsKey = key;
-    inFlightModelIds = fetchModelIds(baseUrl, apiKey)
+    inFlightModelIds = fetchModelIds(baseUrl, apiKey, signal)
       .catch((error: unknown) => {
         log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
         return null;
@@ -154,8 +163,8 @@ function requestModelIds(baseUrl: string, apiKey: string): Promise<string[] | nu
   return inFlightModelIds;
 }
 
-function requestCatalog(): Promise<Record<string, ModelsDevModel>> {
-  inFlightCatalog ??= fetchModelsDevCatalog().finally(() => {
+function requestCatalog(signal?: AbortSignal): Promise<Record<string, ModelsDevModel>> {
+  inFlightCatalog ??= fetchModelsDevCatalog(signal).finally(() => {
     inFlightCatalog = null;
   });
   return inFlightCatalog;
@@ -290,7 +299,7 @@ async function resolveCatalog(
     return { models: cached.catalog, fetchedAt: cached.catalogFetchedAt };
   }
 
-  const fetched = await raceSignal(requestCatalog(), signal);
+  const fetched = await raceSignal(requestCatalog(signal), signal);
 
   if (fetched && Object.keys(fetched).length > 0) {
     return { models: fetched, fetchedAt: Date.now() };
@@ -319,7 +328,7 @@ async function loadModels(baseUrl: string, apiKey: string, options: LoadModelsOp
   }
 
   const [modelIds, catalog] = await Promise.all([
-    raceSignal(requestModelIds(baseUrl, apiKey), signal),
+    raceSignal(requestModelIds(baseUrl, apiKey, signal), signal),
     resolveCatalog(cached, signal),
   ]);
 

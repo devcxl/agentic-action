@@ -22,6 +22,21 @@ export const DEFAULT_EXCLUDES = [
   "**/*.map",
   "**/__snapshots__/**",
   "**/*.snap",
+  // Credential and secret files
+  "**/.env*",
+  "**/.npmrc",
+  "**/.netrc",
+  "**/.pypirc",
+  "**/*.pem",
+  "**/*.key",
+  "**/*.pkcs12",
+  "**/*.p12",
+  "**/*.pfx",
+  "**/*.kdbx",
+  "**/id_rsa*",
+  "**/id_ed25519*",
+  "**/id_ecdsa*",
+  "**/id_dsa*",
 ];
 
 export interface RawNumstatEntry {

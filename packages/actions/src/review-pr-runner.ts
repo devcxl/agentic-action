@@ -104,14 +104,19 @@ export async function executeReviewChunks(params: {
     isPromptInsideActionRoot &&
     existsSync(resolvedPromptPath) &&
     statSync(resolvedPromptPath).isFile();
-  if (explicitPromptRel && !isPromptValidFile) {
+  let baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  if (!isPromptInsideActionRoot && explicitPromptRel) {
     throw new Error(
-      `指定的默认提示词文件不存在或超出 Action 目录边界: ${explicitPromptRel}`,
+      `指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`,
     );
   }
-  const baseReviewContract = isPromptValidFile
-    ? readFileSync(resolvedPromptPath, "utf8")
-    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  if (isPromptValidFile) {
+    baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
+  } else if (explicitPromptRel) {
+    logger.warn(
+      `提示词文件不存在 (${explicitPromptRel})，已安全降级为内置代码审查契约`,
+    );
+  }
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt
     ? `${baseReviewContract}\n\n${userAppendPrompt}`
@@ -190,8 +195,8 @@ export async function executeReviewChunks(params: {
         cwd,
         mode: "json",
         requiredTool: "submit_review",
-        maxRetries: 3,
-        baseDelayMs: 2000,
+        maxRetries: 2,
+        baseDelayMs: 1500,
         sleepImpl,
       });
 

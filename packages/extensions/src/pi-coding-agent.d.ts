@@ -39,8 +39,8 @@ declare module "@earendil-works/pi-coding-agent" {
     name?: string;
     baseUrl: string;
     apiKey: string;
-    api?: string;
-    models?: unknown[];
+    api: string;
+    models: unknown[];
     refreshModels?: (context: ProviderRefreshContext) => Promise<unknown[]>;
   }
 

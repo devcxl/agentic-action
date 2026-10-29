@@ -430,7 +430,18 @@ export interface CollectSnapshotOptions {
   noDefaultExcludes?: boolean;
 }
 
-const SNAPSHOT_SKIP_DIRS = new Set([".git", "node_modules"]);
+const SNAPSHOT_SKIP_DIRS = new Set([
+  ".git",
+  "node_modules",
+  ".aws",
+  ".ssh",
+  ".gnupg",
+  ".cargo",
+  ".rustup",
+  ".venv",
+  "venv",
+  ".pip",
+]);
 
 function sanitizePatchHeaderPath(rawPath: string): string {
   return rawPath.replace(/[\r\n\0-\x1f]+/g, "_");
@@ -442,7 +453,18 @@ function listFilesRecursively(
   skipped: SkippedFiles,
   acc: string[] = [],
 ): string[] {
-  const stat = lstatSync(currentDir);
+  let stat;
+  try {
+    stat = lstatSync(currentDir);
+  } catch (err) {
+    const rel = relative(repoCwd, currentDir).split("\\").join("/") || ".";
+    skipped.excluded.push({
+      path: rel,
+      reason: `unreadable-stat: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return acc;
+  }
+
   if (stat.isSymbolicLink()) {
     const rel = relative(repoCwd, currentDir).split("\\").join("/") || ".";
     skipped.excluded.push({ path: rel, reason: "symlink" });
@@ -454,7 +476,19 @@ function listFilesRecursively(
   }
   if (!stat.isDirectory()) return acc;
 
-  for (const entry of readdirSync(currentDir, { withFileTypes: true })) {
+  let entries;
+  try {
+    entries = readdirSync(currentDir, { withFileTypes: true });
+  } catch (err) {
+    const rel = relative(repoCwd, currentDir).split("\\").join("/") || ".";
+    skipped.excluded.push({
+      path: rel,
+      reason: `unreadable-dir: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return acc;
+  }
+
+  for (const entry of entries) {
     const childPath = join(currentDir, entry.name);
     if (entry.isSymbolicLink()) {
       const rel = relative(repoCwd, childPath).split("\\").join("/");
@@ -535,15 +569,25 @@ export function collectSnapshotInventory(
       continue;
     }
 
-    const stat = lstatSync(absPath);
+    let stat;
+    try {
+      stat = lstatSync(absPath);
+    } catch (err) {
+      skipped.excluded.push({
+        path,
+        reason: `unreadable-file-stat: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
     if (stat.size === 0) {
       skipped.empty.push({ path, reason: "empty-file" });
       continue;
     }
-    if (stat.size > maxFileBytes) {
+    if (stat.size > maxFileBytes * 5) {
       skipped.excluded.push({
         path,
-        reason: `over-max-file-bytes(${maxFileBytes})`,
+        reason: `over-max-file-bytes(${stat.size} > ${maxFileBytes * 5})`,
       });
       continue;
     }
@@ -555,7 +599,16 @@ export function collectSnapshotInventory(
       continue;
     }
 
-    const buf = readFileSync(absPath);
+    let buf: Buffer;
+    try {
+      buf = readFileSync(absPath);
+    } catch (err) {
+      skipped.excluded.push({
+        path,
+        reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
     if (buf.subarray(0, 8192).includes(0)) {
       skipped.binary.push({ path, reason: "binary" });
       continue;

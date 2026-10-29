@@ -120,14 +120,22 @@ export async function runPrReview(
     .filter(Boolean);
   const resolvedTargetAbs = resolve(cwd, targetPath);
   const relTarget = relative(cwd, resolvedTargetAbs).split("\\").join("/");
-  const diffIncludes = [...extraInclude];
-  if (
-    relTarget &&
-    relTarget !== "." &&
-    !relTarget.startsWith("..") &&
-    diffIncludes.length === 0
-  ) {
-    diffIncludes.push(relTarget, `${relTarget}/**`);
+  const diffIncludes: string[] = [];
+  if (relTarget && relTarget !== ".") {
+    if (extraInclude.length === 0) {
+      diffIncludes.push(relTarget, `${relTarget}/**`);
+    } else {
+      for (const pattern of extraInclude) {
+        const clean = pattern.replace(/^\/+/, "");
+        if (clean.startsWith(`${relTarget}/`)) {
+          diffIncludes.push(clean);
+        } else {
+          diffIncludes.push(`${relTarget}/${clean}`);
+        }
+      }
+    }
+  } else {
+    diffIncludes.push(...extraInclude);
   }
 
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
@@ -193,6 +201,10 @@ export async function runPrReview(
     failOn = parseFailOn(env.INPUT_FAIL_ON || "high");
   } catch (err) {
     return failInfra(err instanceof Error ? err.message : String(err));
+  }
+
+  if (relTarget.startsWith("..")) {
+    return failInfra(`target_path 超出工作区边界: ${targetPath}`);
   }
 
   scrubGitCredentials(cwd);

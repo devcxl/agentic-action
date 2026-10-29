@@ -168,7 +168,13 @@ export function materializeReviewContext(options: {
     ];
     for (const filePath of chunk.files) {
       const meta = fileByPath.get(filePath);
-      if (!meta || !meta.patch) continue;
+      if (!meta || !meta.patch) {
+        sections.push(
+          `===== FILE: ${filePath} (NO PATCH IN INVENTORY; inspect directly in workspace) =====`,
+          "",
+        );
+        continue;
+      }
       const fullPatchPath = join(outDir, meta.patch);
       if (meta.oversized) {
         sections.push(
@@ -179,6 +185,11 @@ export function materializeReviewContext(options: {
         sections.push(
           `===== FILE: ${meta.path} (status=${meta.status}, +${meta.added}/-${meta.deleted}) =====`,
           readFileSync(fullPatchPath, "utf8").trimEnd(),
+          "",
+        );
+      } else {
+        sections.push(
+          `===== FILE: ${meta.path} (MISSING PATCH FILE: ${meta.patch}) =====`,
           "",
         );
       }
