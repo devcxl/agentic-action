@@ -7,7 +7,7 @@ import {
   type TriageTypeSpec,
 } from "@agentic-action/contracts";
 
-export const DEFAULT_TRIAGE_CONFIG: TriageConfig = {
+const DEFAULT_TRIAGE_CONFIG: TriageConfig = {
   model: "jev-1.14.0",
   confidence_floor: 0.6,
   fallback: "other",
@@ -42,7 +42,7 @@ export const DEFAULT_TRIAGE_CONFIG: TriageConfig = {
   },
 };
 
-export const DEFAULT_PR_KIND_CRITERIA: Readonly<Record<PrKind, string>> = {
+const DEFAULT_PR_KIND_CRITERIA: Readonly<Record<PrKind, string>> = {
   feature: "Adds new user-facing or API functionality or enhances existing features",
   bugfix: "Fixes a bug, crash, regression, or incorrect behavior",
   refactor: "Restructures internal code without changing external behavior",
@@ -236,7 +236,7 @@ export function buildPrKindQuestion(): JevChoiceQuestion {
   };
 }
 
-export function getAllConfiguredLabels(config: TriageConfig): string[] {
+function getAllConfiguredLabels(config: TriageConfig): string[] {
   return Object.values(config.types).map((t) => t.label);
 }
 

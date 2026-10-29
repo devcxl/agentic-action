@@ -16,7 +16,7 @@ function severityRank(severity: Severity): number {
  * Deduplicate findings by `(file, line, category)` (or identical title on same file/line),
  * keeping the finding with the highest severity.
  */
-export function deduplicateFindings(findings: readonly Finding[]): Finding[] {
+function deduplicateFindings(findings: readonly Finding[]): Finding[] {
   const byKey = new Map<string, Finding>();
 
   for (const finding of findings) {

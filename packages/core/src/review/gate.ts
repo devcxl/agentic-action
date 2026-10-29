@@ -18,7 +18,7 @@ export function parseFailOn(raw?: string): FailOn {
   );
 }
 
-export function severityMeets(severity: Severity, threshold: FailOn): boolean {
+function severityMeets(severity: Severity, threshold: FailOn): boolean {
   if (threshold === "none") return false;
   return (
     SEVERITY_ORDER.indexOf(severity) <= SEVERITY_ORDER.indexOf(threshold)

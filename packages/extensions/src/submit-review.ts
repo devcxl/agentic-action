@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-export interface SubmitReviewFindingParam {
+interface SubmitReviewFindingParam {
   file: string;
   line: number;
   severity: "critical" | "high" | "medium" | "low";
@@ -17,7 +17,7 @@ export interface SubmitReviewFindingParam {
   suggestion: string;
 }
 
-export interface SubmitReviewToolParams {
+interface SubmitReviewToolParams {
   summary: string;
   verdict: "approve" | "comment" | "request_changes";
   findings: SubmitReviewFindingParam[];

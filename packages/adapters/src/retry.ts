@@ -1,7 +1,7 @@
 export const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
-export function parseRetryAfterMs(headerVal: string | null | undefined): number | null {
+function parseRetryAfterMs(headerVal: string | null | undefined): number | null {
   if (!headerVal) return null;
   const seconds = Number(headerVal.trim());
   if (Number.isFinite(seconds) && seconds >= 0) {

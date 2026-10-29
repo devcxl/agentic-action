@@ -18,7 +18,7 @@ export const CATEGORIES = [
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
 
-export const VERDICTS = [
+const VERDICTS = [
   "approve",
   "comment",
   "request_changes",

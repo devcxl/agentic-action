@@ -8,7 +8,7 @@ import {
   type SubmitReviewInput,
 } from "@agentic-action/contracts";
 
-export function normalizeFinding(item: unknown, index = 0): Finding {
+function normalizeFinding(item: unknown, index = 0): Finding {
   const obj = (item && typeof item === "object" ? item : {}) as Record<
     string,
     unknown

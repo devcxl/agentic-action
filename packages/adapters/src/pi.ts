@@ -74,7 +74,7 @@ function accumulateUsage(target: AgentUsage, rawUsage: unknown): void {
   }
 }
 
-export function isTransientErrorMessage(msg?: string): boolean {
+function isTransientErrorMessage(msg?: string): boolean {
   if (!msg) return false;
   return /\b(429|500|502|503|504|529)\b|overloaded|rate[_\s-]?limit|timeout|timed?\s*out|econnreset|etimedout|socket hang up/i.test(
     msg,

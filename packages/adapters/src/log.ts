@@ -1,6 +1,6 @@
 import { redactText } from "@agentic-action/core";
 
-export function redact(
+function redact(
   text: string,
   secretValues: readonly string[] = [],
 ): string {

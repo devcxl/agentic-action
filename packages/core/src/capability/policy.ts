@@ -4,7 +4,7 @@ import type {
   SandboxSpec,
 } from "@agentic-action/contracts";
 
-export const BASE_SAFE_ENV_KEYS = [
+const BASE_SAFE_ENV_KEYS = [
   "PATH",
   "HOME",
   "USER",
@@ -33,7 +33,7 @@ export const BASE_SAFE_ENV_KEYS = [
   "MODELS_DEV_URL",
 ] as const;
 
-export const FIXED_CHILD_ENV: Readonly<Record<string, string>> = {
+const FIXED_CHILD_ENV: Readonly<Record<string, string>> = {
   CI: "true",
   GIT_PAGER: "cat",
   PAGER: "cat",
@@ -86,7 +86,7 @@ const PROVIDER_ENV_MAP: Readonly<Record<string, readonly string[]>> = {
   radius: ["RADIUS_API_KEY"],
 };
 
-export function inferProvider(provider?: string, model?: string): string {
+function inferProvider(provider?: string, model?: string): string {
   const explicit = (provider ?? "").trim().toLowerCase();
   if (explicit) return explicit;
 
@@ -119,7 +119,7 @@ export function inferProvider(provider?: string, model?: string): string {
   return "";
 }
 
-export function resolveProviderEnvKeys(provider?: string, model?: string): string[] {
+function resolveProviderEnvKeys(provider?: string, model?: string): string[] {
   const inferred = inferProvider(provider, model);
   if (!inferred) return [];
   const keys = PROVIDER_ENV_MAP[inferred];

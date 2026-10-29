@@ -50,7 +50,7 @@ export interface RunAgentInputs {
   timeoutMs?: number;
 }
 
-export function buildPiInvocation(
+function buildPiInvocation(
   inputs: RunAgentInputs,
   cwd = process.cwd(),
   hostEnv: Readonly<Record<string, string | undefined>> = process.env,
@@ -220,7 +220,7 @@ export async function runAgent(
   };
 }
 
-export function readInputsFromEnv(
+function readInputsFromEnv(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): RunAgentInputs {
   const modeRaw = (env.INPUT_MODE ?? "text").trim();
