@@ -392,3 +392,12 @@ export function redactText(
 
   return out;
 }
+
+/**
+ * Test whether a relative path tries to escape outside its root directory.
+ */
+export function isPathEscaping(rel: string): boolean {
+  const norm = rel.split("\\").join("/");
+  return norm === ".." || norm.startsWith("../") || norm.startsWith("/..");
+}
+

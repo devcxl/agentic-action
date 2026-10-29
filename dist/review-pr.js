@@ -7698,6 +7698,10 @@ function redactText(text, secretValues = []) {
   out = out.replace(/\b(gh[pousr]_[A-Za-z0-9_]{8,})\b/g, "***");
   return out;
 }
+function isPathEscaping(rel) {
+  const norm = rel.split("\\").join("/");
+  return norm === ".." || norm.startsWith("../") || norm.startsWith("/..");
+}
 
 // packages/core/src/review/budget.ts
 var NUL = "\0";
@@ -8951,7 +8955,7 @@ function collectSnapshotInventory(options) {
   const realRepoCwd = realpathSync(repoCwd);
   const targetAbs = realpathSync(targetCandidate);
   const relCheck = relative(realRepoCwd, targetAbs);
-  if (relCheck.startsWith("..") || resolve(realRepoCwd, relCheck) !== targetAbs) {
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
     throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
   }
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
@@ -10421,7 +10425,7 @@ async function executeReviewChunks(params) {
   const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve4(actionRoot, defaultPromptRel);
   const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
-  const isPromptInsideActionRoot = Boolean(relToActionRoot) && !relToActionRoot.startsWith("..") && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
+  const isPromptInsideActionRoot = Boolean(relToActionRoot) && !isPathEscaping(relToActionRoot) && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
   const isPromptValidFile = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) && statSync2(resolvedPromptPath).isFile();
   let baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
@@ -10429,7 +10433,15 @@ async function executeReviewChunks(params) {
       `\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`
     );
   }
-  if (isPromptValidFile) {
+  const isPromptTamperedInPr = chunkPlan.filesIncluded.some(
+    (f) => f.path === defaultPromptRel || f.path === ".github/prompts/pr-review.md" || f.path === ".github/prompts/security-audit.md"
+  );
+  if (isPromptTamperedInPr) {
+    logger.warn(
+      `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel})\uFF0C\u4E3A\u9632\u6B62\u95E8\u7981\u7ED5\u8FC7\uFF0C\u672C\u6B21\u5BA1\u67E5\u5F3A\u5236\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u5185\u7F6E\u5951\u7EA6`
+    );
+    baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  } else if (isPromptValidFile) {
     baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {
     logger.warn(
@@ -10643,7 +10655,8 @@ async function runPrReview(env = process.env, options = {}) {
   ]);
   const logger = createLogger("pr-review", secretValues);
   const tempBase = env.RUNNER_TEMP || tmpdir();
-  const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, "pi-review-context");
+  const defaultContextName = auditModeRaw === "codebase" ? "pi-security-audit-context" : "pi-review-context";
+  const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, defaultContextName);
   mkdirSync3(contextDir, { recursive: true });
   const failInfra = (reason) => {
     logger.error(reason);
@@ -10678,7 +10691,23 @@ async function runPrReview(env = process.env, options = {}) {
   } catch (err) {
     return failInfra(err instanceof Error ? err.message : String(err));
   }
-  if (relTarget.startsWith("..")) {
+  if (auditModeRaw !== "diff" && auditModeRaw !== "codebase" && auditModeRaw !== "auto") {
+    return failInfra(
+      `\u975E\u6CD5 audit_mode: ${env.INPUT_AUDIT_MODE}\uFF08\u4EC5\u652F\u6301 auto\u3001codebase\u3001diff\uFF09`
+    );
+  }
+  if (auditModeRaw === "codebase") {
+    const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+    const dangerousTools = rawTools.filter(
+      (t) => t === "bash" || t === "write" || t === "edit"
+    );
+    if (dangerousTools.length > 0) {
+      return failInfra(
+        `\u5B89\u5168\u5BA1\u8BA1\u6A21\u5F0F\u4EC5\u5141\u8BB8\u53EA\u8BFB\u5DE5\u5177\uFF08read, grep, find, ls\uFF09\uFF0C\u7981\u6B62\u542F\u7528\u5199\u6216\u6267\u884C\u5DE5\u5177: ${dangerousTools.join(", ")}`
+      );
+    }
+  }
+  if (isPathEscaping(relTarget)) {
     return failInfra(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${targetPath}`);
   }
   scrubGitCredentials(cwd);

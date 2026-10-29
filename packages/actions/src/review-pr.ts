@@ -13,6 +13,7 @@ import {
   collectSensitiveValues,
   decideGate,
   hasModelCredentials,
+  isPathEscaping,
   mergeChunkReports,
   parseFailOn,
   planChunks,
@@ -163,9 +164,13 @@ export async function runPrReview(
   const logger = createLogger("pr-review", secretValues);
 
   const tempBase = env.RUNNER_TEMP || tmpdir();
+  const defaultContextName =
+    auditModeRaw === "codebase"
+      ? "pi-security-audit-context"
+      : "pi-review-context";
   const contextDir = env.INPUT_CONTEXT_DIR
     ? resolve(cwd, env.INPUT_CONTEXT_DIR)
-    : join(tempBase, "pi-review-context");
+    : join(tempBase, defaultContextName);
   mkdirSync(contextDir, { recursive: true });
 
   const failInfra = (reason: string): ExitCode => {
@@ -203,7 +208,32 @@ export async function runPrReview(
     return failInfra(err instanceof Error ? err.message : String(err));
   }
 
-  if (relTarget.startsWith("..")) {
+  if (
+    auditModeRaw !== "diff" &&
+    auditModeRaw !== "codebase" &&
+    auditModeRaw !== "auto"
+  ) {
+    return failInfra(
+      `非法 audit_mode: ${env.INPUT_AUDIT_MODE}（仅支持 auto、codebase、diff）`,
+    );
+  }
+
+  if (auditModeRaw === "codebase") {
+    const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const dangerousTools = rawTools.filter(
+      (t) => t === "bash" || t === "write" || t === "edit",
+    );
+    if (dangerousTools.length > 0) {
+      return failInfra(
+        `安全审计模式仅允许只读工具（read, grep, find, ls），禁止启用写或执行工具: ${dangerousTools.join(", ")}`,
+      );
+    }
+  }
+
+  if (isPathEscaping(relTarget)) {
     return failInfra(`target_path 超出工作区边界: ${targetPath}`);
   }
 

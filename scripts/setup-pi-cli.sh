@@ -24,6 +24,8 @@ for attempt in 1 2 3; do
     exit 0
   fi
   echo "[setup-pi-cli] npm install attempt ${attempt} failed, retrying..." >&2
-  sleep 3
+  if [ "$attempt" -lt 3 ]; then
+    sleep 3
+  fi
 done
 exit 1

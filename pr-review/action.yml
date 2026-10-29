@@ -61,6 +61,10 @@ inputs:
     description: 'Allow partial planned chunk coverage without returning InvalidReport (true/false)'
     required: false
     default: 'false'
+  include:
+    description: 'Optional comma-separated glob patterns to include in the review'
+    required: false
+    default: ''
   exclude:
     description: 'Additional comma-separated glob patterns to exclude from review'
     required: false
@@ -222,6 +226,7 @@ runs:
         INPUT_MAX_FILE_BYTES: ${{ inputs.max_file_bytes }}
         INPUT_CONCURRENCY: ${{ inputs.concurrency }}
         INPUT_ALLOW_PARTIAL: ${{ inputs.allow_partial }}
+        INPUT_INCLUDE: ${{ inputs.include }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
         INPUT_LINK_ISSUES: ${{ inputs.link_issues }}
         INPUT_INCLUDE_ISSUE_BODY: ${{ inputs.include_issue_body }}

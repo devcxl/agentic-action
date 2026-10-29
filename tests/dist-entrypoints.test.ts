@@ -171,5 +171,20 @@ process.stdout.write(JSON.stringify(event) + "\\n");
     expect(summaryMd).toContain("<!-- pi-security-audit:begin -->");
     expect(summaryMd).toContain("## Pi Agent 第三方代码安全审计");
     expect(summaryMd).toContain("Unvalidated command execution via child_process.exec");
+
+    const ghOutText = readFileSync(ghOut, "utf8");
+    expect(ghOutText).toContain(`exit_code=${ExitCode.GateFailed}`);
+    expect(ghOutText).toContain("findings_count=1");
+    expect(ghOutText).toContain("pi-security-audit-context");
+
+    const auditReportPath = join(
+      workDir,
+      "pi-security-audit-context/report.json",
+    );
+    expect(existsSync(auditReportPath)).toBe(true);
+    const reportJson = JSON.parse(readFileSync(auditReportPath, "utf8"));
+    expect(reportJson.verdict).toBe("request_changes");
+    expect(reportJson.findings[0].category).toBe("security");
+    expect(reportJson.findings[0].severity).toBe("high");
   });
 });

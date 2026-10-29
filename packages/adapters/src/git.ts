@@ -19,6 +19,7 @@ import type {
 import {
   DEFAULT_EXCLUDES,
   globToRegExp,
+  isPathEscaping,
   matchesAny,
   parseNameStatusZ,
   parseNumstatZ,
@@ -524,7 +525,7 @@ export function collectSnapshotInventory(
   const realRepoCwd = realpathSync(repoCwd);
   const targetAbs = realpathSync(targetCandidate);
   const relCheck = relative(realRepoCwd, targetAbs);
-  if (relCheck.startsWith("..") || resolve(realRepoCwd, relCheck) !== targetAbs) {
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
     throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
   }
 

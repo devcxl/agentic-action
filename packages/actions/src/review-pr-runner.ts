@@ -12,6 +12,7 @@ import {
   buildSandboxSpec,
   deriveCapabilityPolicy,
   extractJsonReport,
+  isPathEscaping,
   redactText,
   toChunkReport,
   validateSubmitReviewInput,
@@ -98,7 +99,7 @@ export async function executeReviewChunks(params: {
   const relToActionRoot = relative(actionRoot, resolvedPromptPath);
   const isPromptInsideActionRoot =
     Boolean(relToActionRoot) &&
-    !relToActionRoot.startsWith("..") &&
+    !isPathEscaping(relToActionRoot) &&
     resolve(actionRoot, relToActionRoot) === resolvedPromptPath;
   const isPromptValidFile =
     isPromptInsideActionRoot &&
@@ -110,7 +111,19 @@ export async function executeReviewChunks(params: {
       `指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`,
     );
   }
-  if (isPromptValidFile) {
+
+  const isPromptTamperedInPr = chunkPlan.filesIncluded.some(
+    (f) =>
+      f.path === defaultPromptRel ||
+      f.path === ".github/prompts/pr-review.md" ||
+      f.path === ".github/prompts/security-audit.md",
+  );
+  if (isPromptTamperedInPr) {
+    logger.warn(
+      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel})，为防止门禁绕过，本次审查强制使用受信任的内置契约`,
+    );
+    baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  } else if (isPromptValidFile) {
     baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {
     logger.warn(
