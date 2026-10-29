@@ -626,9 +626,22 @@ function writeSnapshotPatches(
   realRepoCwd: string,
   patchDir: string,
   maxFileBytes: number,
-): void {
+  skipped: SkippedFiles,
+): DiffFileEntry[] {
   let index = 0;
+  const writtenFiles: DiffFileEntry[] = [];
   for (const file of files) {
+    let text = "";
+    try {
+      text = readFileSync(join(realRepoCwd, file.path), "utf8");
+    } catch (err) {
+      skipped.excluded.push({
+        path: file.path,
+        reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`,
+      });
+      continue;
+    }
+
     index += 1;
     const safeName = file.path
       .replace(/[^A-Za-z0-9._-]+/g, "__")
@@ -636,12 +649,6 @@ function writeSnapshotPatches(
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
 
-    let text = "";
-    try {
-      text = readFileSync(join(realRepoCwd, file.path), "utf8");
-    } catch {
-      text = "";
-    }
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
     const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch =
@@ -660,7 +667,9 @@ function writeSnapshotPatches(
       file.note = `patch ${bytes} 字节，超过单次读取预算 ${maxFileBytes}，请用 read 的 offset/limit 分页读取（约 ${file.pages} 页）`;
       file.readVia = `read ${file.patch} （分 ${file.pages} 页，用 offset/limit 逐页读）`;
     }
+    writtenFiles.push(file);
   }
+  return writtenFiles;
 }
 
 /**
@@ -739,7 +748,16 @@ export function collectSnapshotInventory(
   rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
 
-  writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes);
+  const writtenFiles = writeSnapshotPatches(
+    files,
+    realRepoCwd,
+    patchDir,
+    maxFileBytes,
+    skipped,
+  );
+  if (writtenFiles.length === 0) {
+    throw new Error(`target_path (${rawTarget}) 下未找到可审计的源码文件`);
+  }
 
   return {
     baseSha: "SNAPSHOT",
@@ -749,7 +767,7 @@ export function collectSnapshotInventory(
     mergeBase: "SNAPSHOT",
     contextLines: 0,
     filesChangedTotal: absFiles.length,
-    files,
+    files: writtenFiles,
     skipped,
     baseSnapshot: null,
     excludes: {

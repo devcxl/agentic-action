@@ -211,6 +211,7 @@ runs:
       id: audit
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}/..
         ACTION_ROOT: ${{ github.action_path }}/..
         INPUT_SECURITY_AUDIT: 'true'
         INPUT_DEFAULT_PROMPT_FILE: .github/prompts/security-audit.md

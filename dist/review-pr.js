@@ -9050,19 +9050,24 @@ function filterSnapshotCandidates(params) {
   }
   return files;
 }
-function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes) {
+function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes, skipped) {
   let index = 0;
+  const writtenFiles = [];
   for (const file of files) {
+    let text = "";
+    try {
+      text = readFileSync(join(realRepoCwd, file.path), "utf8");
+    } catch (err) {
+      skipped.excluded.push({
+        path: file.path,
+        reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`
+      });
+      continue;
+    }
     index += 1;
     const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
-    let text = "";
-    try {
-      text = readFileSync(join(realRepoCwd, file.path), "utf8");
-    } catch {
-      text = "";
-    }
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
     const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch = `--- /dev/null
@@ -9080,7 +9085,9 @@ function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes) {
       file.note = `patch ${bytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6B21\u8BFB\u53D6\u9884\u7B97 ${maxFileBytes}\uFF0C\u8BF7\u7528 read \u7684 offset/limit \u5206\u9875\u8BFB\u53D6\uFF08\u7EA6 ${file.pages} \u9875\uFF09`;
       file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
     }
+    writtenFiles.push(file);
   }
+  return writtenFiles;
 }
 function collectSnapshotInventory(options) {
   const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
@@ -9143,7 +9150,16 @@ function collectSnapshotInventory(options) {
   rmSync(patchDir, { recursive: true, force: true });
   rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
-  writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes);
+  const writtenFiles = writeSnapshotPatches(
+    files,
+    realRepoCwd,
+    patchDir,
+    maxFileBytes,
+    skipped
+  );
+  if (writtenFiles.length === 0) {
+    throw new Error(`target_path (${rawTarget}) \u4E0B\u672A\u627E\u5230\u53EF\u5BA1\u8BA1\u7684\u6E90\u7801\u6587\u4EF6`);
+  }
   return {
     baseSha: "SNAPSHOT",
     baseInput: rawTarget,
@@ -9152,7 +9168,7 @@ function collectSnapshotInventory(options) {
     mergeBase: "SNAPSHOT",
     contextLines: 0,
     filesChangedTotal: absFiles.length,
-    files,
+    files: writtenFiles,
     skipped,
     baseSnapshot: null,
     excludes: {

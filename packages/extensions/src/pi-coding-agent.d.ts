@@ -36,7 +36,7 @@ declare module "@earendil-works/pi-coding-agent" {
   }
 
   export interface ProviderConfig {
-    name?: string;
+    name: string;
     baseUrl: string;
     apiKey: string;
     api: string;

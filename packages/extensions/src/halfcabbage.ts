@@ -42,6 +42,7 @@ interface ModelsDevModel {
 
 interface CacheEntry {
   baseUrl: string;
+  keyHash?: string;
   /** 模型列表拉取时间 */
   fetchedAt: number;
   /** models.dev 元数据目录拉取时间 */
@@ -239,16 +240,18 @@ function toPiModel(id: string, meta: ModelsDevModel | undefined) {
   };
 }
 
-function readCache(baseUrl: string): CacheEntry | null {
+function readCache(baseUrl: string, keyHash?: string): CacheEntry | null {
   try {
     if (!existsSync(CACHE_FILE)) return null;
 
     const entry = JSON.parse(readFileSync(CACHE_FILE, "utf8")) as Partial<CacheEntry>;
 
     if (entry.baseUrl !== baseUrl || !Array.isArray(entry.modelIds)) return null;
+    if (keyHash && entry.keyHash && entry.keyHash !== keyHash) return null;
 
     return {
       baseUrl: entry.baseUrl,
+      keyHash: entry.keyHash,
       fetchedAt: entry.fetchedAt ?? 0,
       catalogFetchedAt: entry.catalogFetchedAt ?? 0,
       modelIds: entry.modelIds,
@@ -261,7 +264,7 @@ function readCache(baseUrl: string): CacheEntry | null {
 
 /** 原子写入：先写临时文件再 rename，避免并发刷新写出半截 JSON */
 function writeCache(entry: CacheEntry): void {
-  const tempFile = `${CACHE_FILE}.${process.pid}.tmp`;
+  const tempFile = `${CACHE_FILE}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
   try {
     mkdirSync(dirname(CACHE_FILE), { recursive: true });
     writeFileSync(tempFile, JSON.stringify(entry));
@@ -313,7 +316,8 @@ interface LoadModelsOptions {
 
 async function loadModels(baseUrl: string, apiKey: string, options: LoadModelsOptions = {}) {
   const { signal, force = false } = options;
-  const cached = readCache(baseUrl);
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const cached = readCache(baseUrl, keyHash);
 
   if (!force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     log(`using cached model list (${cached.modelIds.length} models)`);
@@ -335,6 +339,7 @@ async function loadModels(baseUrl: string, apiKey: string, options: LoadModelsOp
 
   writeCache({
     baseUrl,
+    keyHash,
     fetchedAt: Date.now(),
     catalogFetchedAt: catalog.fetchedAt,
     modelIds,
@@ -397,7 +402,7 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
         return initialModels;
       }
 
-      const force = context.force === true;
+      const force = context.force !== false;
       log(`refreshing models via API${force ? " (forced)" : ""}...`);
       const refreshed = await loadModels(endpoint, activeKey, { signal: context.signal, force });
       if (refreshed.length > 0) {

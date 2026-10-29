@@ -211,6 +211,7 @@ runs:
       id: review
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}/..
         ACTION_ROOT: ${{ github.action_path }}/..
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_PROVIDER: ${{ inputs.provider }}
