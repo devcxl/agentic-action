@@ -137,13 +137,21 @@ jobs:
             -o "${ARCHIVE}" \
             "${RELEASE_TAG}"
 
-          # 打包后确认关键产物确实在里面，避免发出空壳或残缺包
+          # 打包后确认关键产物确实在里面，避免发出空壳或残缺包。
+          # 先落一份清单再比对：直接 `tar -tzf | grep -q` 在 pipefail 下会让
+          # grep 提前关管道，tar 因 SIGPIPE 写失败，把一次成功校验误判为失败。
+          tar -tzf "${ARCHIVE}" > listing.txt
+          missing=0
           for required in action.yml dist/review-pr.js dist/run-agent.js dist/triage-issue.js; do
-            if ! tar -tzf "${ARCHIVE}" | grep -qx "agentic-action-${VERSION}/${required}"; then
+            if ! grep -qx "agentic-action-${VERSION}/${required}" listing.txt; then
               echo "::error::发布包缺少必需文件: ${required}"
-              exit 1
+              missing=1
             fi
           done
+          if [[ "${missing}" -ne 0 ]]; then
+            exit 1
+          fi
+          rm -f listing.txt
 
           sha256sum "${ARCHIVE}" > SHA256SUMS
 
