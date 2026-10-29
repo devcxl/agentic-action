@@ -242,7 +242,7 @@ export async function executeReviewChunks(params: {
       );
 
       const chunkTimeoutMs =
-        Math.max(10_000, Number(env.INPUT_TIMEOUT_MS || "300000") || 300_000);
+        Math.max(10_000, Number(env.INPUT_TIMEOUT_MS || "600000") || 600_000);
 
       const { result: piRes, durationsMs } = await runPiWithRetry(sandbox, {
         piBin,
@@ -280,7 +280,7 @@ export async function executeReviewChunks(params: {
       try {
         const fallbackSource = existsSync(reportFile)
           ? readFileSync(reportFile, "utf8")
-          : piRes.stdout;
+          : (piRes.textOutput || piRes.stdout);
         if (fallbackSource && fallbackSource.trim()) {
           const extracted = extractJsonReport(fallbackSource);
           const validated = validateSubmitReviewInput({

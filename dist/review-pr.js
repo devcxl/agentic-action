@@ -10369,14 +10369,14 @@ function buildReviewPrompt(params) {
       `2. \u672C\u6B21\u8C03\u7528\u4EC5\u8D1F\u8D23\u5BA1\u67E5 Chunk #${chunk.index}\uFF08\u5171\u8BA1\u5212 ${plannedChunks ?? 1}/${totalChunks ?? 1} \u4E2A\u5206\u5757\uFF09\uFF0C\u5305\u542B\u4EE5\u4E0B\u6587\u4EF6\uFF1A`,
       ...chunk.files.map((f) => `   - \`${f}\``),
       `3. \u82E5\u9047\u5230\u6807\u6CE8\u4E3A OVERSIZED \u7684\u6587\u4EF6\uFF0C\u53EF\u6309\u63D0\u793A\u7528 offset/limit \u5206\u9875\u8BFB\u53D6\u5BF9\u5E94\u7684\u5355\u6587\u4EF6\u8865\u4E01 \`${join4(contextDir, "patches")}/<name>.patch\`\uFF1B\u9700\u8981\u5BF9\u7167\u6539\u52A8\u524D\u7248\u672C\u65F6\u53EF\u8BFB\u53D6 \`${join4(contextDir, "base")}/<name>\`\u3002`,
-      "4. \u5BA1\u67E5\u5B8C\u6210\u540E\u7ACB\u5373\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u672C chunk \u7684\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u8BBA\u3002"
+      "4. \u8F6E\u6B21\u4E0E\u63D0\u4EA4\u8981\u6C42\uFF1A\u8BFB\u53D6\u5206\u5757\u8865\u4E01\u540E\uFF0C\u9664\u786E\u9700\u5B9A\u70B9\u6838\u5B9E\u7684 1\u20132 \u5904\u4EE3\u7801\u5916\uFF0C\u5FC5\u987B\u5728\u7B2C 3 \u8F6E\u5185\u76F4\u63A5\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u672C\u5206\u5757\u5BA1\u67E5\u7ED3\u8BBA\uFF0C\u4E25\u7981\u53CD\u590D\u6CDB\u8BFB\u65E0\u5173\u6587\u4EF6\u5BFC\u81F4\u8D85\u65F6\u3002"
     );
   } else {
     lines.push(
       `1. \u5148\u8BFB\u53D6 \`${join4(contextDir, "REVIEW_CONTEXT.md")}\` \u4E0E \`${join4(contextDir, "manifest.json")}\` \u83B7\u53D6\u5BA1\u67E5\u6E05\u5355\u3002`,
       `2. \u672C\u6B21\u4E3A\u5168\u91CF\u4EE3\u7801\u5BA1\u67E5\uFF0C\u8BF7\u6309 manifest \u5217\u51FA\u7684\u5206\u5757\u987A\u5E8F\u4F9D\u6B21\u8BFB\u53D6 \`${join4(contextDir, "chunks")}\` \u76EE\u5F55\u4E0B\u7684\u5404\u5206\u5757\u8865\u4E01\u3002`,
       `3. \u82E5\u9047\u5230\u6807\u6CE8\u4E3A OVERSIZED \u7684\u6587\u4EF6\uFF0C\u53EF\u8BFB\u53D6 \`${join4(contextDir, "patches")}/<name>.patch\`\uFF1B\u9700\u8981\u5BF9\u7167\u6539\u52A8\u524D\u7248\u672C\u65F6\u8BFB\u53D6 \`${join4(contextDir, "base")}/<name>\`\u3002`,
-      "4. \u5BA1\u67E5\u5B8C\u6210\u540E\u7ACB\u5373\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u8BBA\u3002"
+      "4. \u8F6E\u6B21\u4E0E\u63D0\u4EA4\u8981\u6C42\uFF1A\u5BA1\u67E5\u5B8C\u6210\u540E\uFF0C\u5FC5\u987B\u8C03\u7528 `submit_review` \u5DE5\u5177\u63D0\u4EA4\u7ED3\u6784\u5316\u5BA1\u67E5\u7ED3\u8BBA\uFF0C\u4E25\u7981\u53CD\u590D\u6CDB\u8BFB\u65E0\u5173\u6587\u4EF6\u3002"
     );
   }
   if (reviewPlan && reviewPlan.focus.length > 0) {
@@ -10673,7 +10673,7 @@ ${userAppendPrompt}` : baseReviewContract;
       logger.info(
         `Reviewing chunk #${chunk.index}/${chunkPlan.plannedChunks} (${chunk.files.length} files)`
       );
-      const chunkTimeoutMs = Math.max(1e4, Number(env.INPUT_TIMEOUT_MS || "300000") || 3e5);
+      const chunkTimeoutMs = Math.max(1e4, Number(env.INPUT_TIMEOUT_MS || "600000") || 6e5);
       const { result: piRes, durationsMs } = await runPiWithRetry(sandbox, {
         piBin,
         cwd,
@@ -10705,7 +10705,7 @@ ${userAppendPrompt}` : baseReviewContract;
         }
       }
       try {
-        const fallbackSource = existsSync5(reportFile) ? readFileSync5(reportFile, "utf8") : piRes.stdout;
+        const fallbackSource = existsSync5(reportFile) ? readFileSync5(reportFile, "utf8") : piRes.textOutput || piRes.stdout;
         if (fallbackSource && fallbackSource.trim()) {
           const extracted = extractJsonReport(fallbackSource);
           const validated = validateSubmitReviewInput({

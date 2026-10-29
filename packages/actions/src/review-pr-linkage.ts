@@ -109,14 +109,14 @@ export function buildReviewPrompt(params: {
       `2. 本次调用仅负责审查 Chunk #${chunk.index}（共计划 ${plannedChunks ?? 1}/${totalChunks ?? 1} 个分块），包含以下文件：`,
       ...chunk.files.map((f) => `   - \`${f}\``),
       `3. 若遇到标注为 OVERSIZED 的文件，可按提示用 offset/limit 分页读取对应的单文件补丁 \`${join(contextDir, "patches")}/<name>.patch\`；需要对照改动前版本时可读取 \`${join(contextDir, "base")}/<name>\`。`,
-      "4. 审查完成后立即调用 `submit_review` 工具提交本 chunk 的结构化审查结论。",
+      "4. 轮次与提交要求：读取分块补丁后，除确需定点核实的 1–2 处代码外，必须在第 3 轮内直接调用 `submit_review` 工具提交本分块审查结论，严禁反复泛读无关文件导致超时。",
     );
   } else {
     lines.push(
       `1. 先读取 \`${join(contextDir, "REVIEW_CONTEXT.md")}\` 与 \`${join(contextDir, "manifest.json")}\` 获取审查清单。`,
       `2. 本次为全量代码审查，请按 manifest 列出的分块顺序依次读取 \`${join(contextDir, "chunks")}\` 目录下的各分块补丁。`,
       `3. 若遇到标注为 OVERSIZED 的文件，可读取 \`${join(contextDir, "patches")}/<name>.patch\`；需要对照改动前版本时读取 \`${join(contextDir, "base")}/<name>\`。`,
-      "4. 审查完成后立即调用 `submit_review` 工具提交结构化审查结论。",
+      "4. 轮次与提交要求：审查完成后，必须调用 `submit_review` 工具提交结构化审查结论，严禁反复泛读无关文件。",
     );
   }
 
