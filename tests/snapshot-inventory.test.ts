@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { collectSnapshotInventory } from "../packages/adapters/src/git.ts";
+import { collectSnapshotInventory } from "@agentic-action/adapters";
 
 describe("collectSnapshotInventory", () => {
   let workDir: string;

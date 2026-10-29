@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -171,7 +171,9 @@ export async function runPrReview(
   const contextDir = env.INPUT_CONTEXT_DIR
     ? resolve(cwd, env.INPUT_CONTEXT_DIR)
     : join(tempBase, defaultContextName);
-  mkdirSync(contextDir, { recursive: true });
+
+  const relContext = relative(cwd, contextDir);
+  const home = homedir();
 
   const failInfra = (reason: string): ExitCode => {
     logger.error(reason);
@@ -200,6 +202,19 @@ export async function runPrReview(
     );
     return ExitCode.Infrastructure;
   };
+
+  if (
+    contextDir === cwd ||
+    contextDir === tempBase ||
+    contextDir === home ||
+    contextDir === "/" ||
+    contextDir === resolve(cwd, "..")
+  ) {
+    return failInfra(
+      `context_dir 不能为工作区根目录、系统临时根目录、用户主目录或根目录: ${contextDir}`,
+    );
+  }
+  mkdirSync(contextDir, { recursive: true });
 
   let failOn;
   try {
@@ -427,6 +442,7 @@ export async function runPrReview(
           rawResultFile,
           chunkPlan,
           reviewPlan,
+          inventory,
           configuredThinking,
           concurrency,
           githubToken,

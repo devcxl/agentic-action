@@ -5,6 +5,7 @@ import type {
   AgentUsage,
   ChunkPlan,
   ChunkReport,
+  DiffInventory,
   ReviewPlan,
   ThinkingLevel,
 } from "@agentic-action/contracts";
@@ -64,6 +65,7 @@ export async function executeReviewChunks(params: {
   rawResultFile: string;
   chunkPlan: ChunkPlan;
   reviewPlan: ReviewPlan;
+  inventory?: DiffInventory;
   configuredThinking: ThinkingLevel;
   concurrency: number;
   githubToken: string;
@@ -105,6 +107,30 @@ export async function executeReviewChunks(params: {
     isPromptInsideActionRoot &&
     existsSync(resolvedPromptPath) &&
     statSync(resolvedPromptPath).isFile();
+
+  // 1. Prefer trusted ACTION_PATH (external action installation directory) if available
+  const trustedActionPrompt = process.env.ACTION_PATH
+    ? resolve(process.env.ACTION_PATH, defaultPromptRel)
+    : undefined;
+  const isTrustedPromptFile =
+    trustedActionPrompt &&
+    existsSync(trustedActionPrompt) &&
+    statSync(trustedActionPrompt).isFile();
+
+  const allChangedPaths = new Set<string>([
+    ...(params.inventory?.files.map((f) => f.path) ?? []),
+    ...(params.inventory?.skipped.excluded.map((s) => s.path) ?? []),
+    ...(params.inventory?.skipped.binary.map((s) => s.path) ?? []),
+    ...(params.inventory?.skipped.empty.map((s) => s.path) ?? []),
+    ...chunkPlan.filesIncluded.map((f) => f.path),
+  ]);
+
+  const isPromptTamperedInPr =
+    allChangedPaths.has(defaultPromptRel) ||
+    allChangedPaths.has(".github/prompts/pr-review.md") ||
+    allChangedPaths.has(".github/prompts/security-audit.md") ||
+    [...allChangedPaths].some((p) => p.startsWith(".github/prompts/"));
+
   let baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
     throw new Error(
@@ -112,17 +138,13 @@ export async function executeReviewChunks(params: {
     );
   }
 
-  const isPromptTamperedInPr = chunkPlan.filesIncluded.some(
-    (f) =>
-      f.path === defaultPromptRel ||
-      f.path === ".github/prompts/pr-review.md" ||
-      f.path === ".github/prompts/security-audit.md",
-  );
   if (isPromptTamperedInPr) {
     logger.warn(
       `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel})，为防止门禁绕过，本次审查强制使用受信任的内置契约`,
     );
     baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  } else if (isTrustedPromptFile) {
+    baseReviewContract = readFileSync(trustedActionPrompt, "utf8");
   } else if (isPromptValidFile) {
     baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {

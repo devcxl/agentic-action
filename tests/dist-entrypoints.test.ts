@@ -158,7 +158,7 @@ process.stdout.write(JSON.stringify(event) + "\\n");
         INPUT_COMMENT_MARKER: "pi-security-audit",
         INPUT_PROVIDER: "openai",
         INPUT_MODEL: "gpt-4o",
-        INPUT_API_KEY: "sk-test-audit-key",
+        INPUT_API_KEY: "test-fake-api-key-value",
         INPUT_FAIL_ON: "high",
         INPUT_LINK_ISSUES: "false",
         INPUT_POST_COMMENT: "false",

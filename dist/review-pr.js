@@ -7367,7 +7367,7 @@ var require_dist = __commonJS({
 
 // packages/actions/src/review-pr.ts
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname as dirname3, join as join5, relative as relative3, resolve as resolve5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10459,20 +10459,29 @@ async function executeReviewChunks(params) {
   const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
   const isPromptInsideActionRoot = Boolean(relToActionRoot) && !isPathEscaping(relToActionRoot) && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
   const isPromptValidFile = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) && statSync2(resolvedPromptPath).isFile();
+  const trustedActionPrompt = process.env.ACTION_PATH ? resolve4(process.env.ACTION_PATH, defaultPromptRel) : void 0;
+  const isTrustedPromptFile = trustedActionPrompt && existsSync4(trustedActionPrompt) && statSync2(trustedActionPrompt).isFile();
+  const allChangedPaths = /* @__PURE__ */ new Set([
+    ...params.inventory?.files.map((f) => f.path) ?? [],
+    ...params.inventory?.skipped.excluded.map((s) => s.path) ?? [],
+    ...params.inventory?.skipped.binary.map((s) => s.path) ?? [],
+    ...params.inventory?.skipped.empty.map((s) => s.path) ?? [],
+    ...chunkPlan.filesIncluded.map((f) => f.path)
+  ]);
+  const isPromptTamperedInPr = allChangedPaths.has(defaultPromptRel) || allChangedPaths.has(".github/prompts/pr-review.md") || allChangedPaths.has(".github/prompts/security-audit.md") || [...allChangedPaths].some((p) => p.startsWith(".github/prompts/"));
   let baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
     throw new Error(
       `\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`
     );
   }
-  const isPromptTamperedInPr = chunkPlan.filesIncluded.some(
-    (f) => f.path === defaultPromptRel || f.path === ".github/prompts/pr-review.md" || f.path === ".github/prompts/security-audit.md"
-  );
   if (isPromptTamperedInPr) {
     logger.warn(
       `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel})\uFF0C\u4E3A\u9632\u6B62\u95E8\u7981\u7ED5\u8FC7\uFF0C\u672C\u6B21\u5BA1\u67E5\u5F3A\u5236\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u5185\u7F6E\u5951\u7EA6`
     );
     baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  } else if (isTrustedPromptFile) {
+    baseReviewContract = readFileSync4(trustedActionPrompt, "utf8");
   } else if (isPromptValidFile) {
     baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {
@@ -10689,7 +10698,8 @@ async function runPrReview(env = process.env, options = {}) {
   const tempBase = env.RUNNER_TEMP || tmpdir();
   const defaultContextName = auditModeRaw === "codebase" ? "pi-security-audit-context" : "pi-review-context";
   const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, defaultContextName);
-  mkdirSync3(contextDir, { recursive: true });
+  const relContext = relative3(cwd, contextDir);
+  const home = homedir();
   const failInfra = (reason) => {
     logger.error(reason);
     const envelope2 = {
@@ -10717,6 +10727,12 @@ async function runPrReview(env = process.env, options = {}) {
     );
     return 30 /* Infrastructure */;
   };
+  if (contextDir === cwd || contextDir === tempBase || contextDir === home || contextDir === "/" || contextDir === resolve5(cwd, "..")) {
+    return failInfra(
+      `context_dir \u4E0D\u80FD\u4E3A\u5DE5\u4F5C\u533A\u6839\u76EE\u5F55\u3001\u7CFB\u7EDF\u4E34\u65F6\u6839\u76EE\u5F55\u3001\u7528\u6237\u4E3B\u76EE\u5F55\u6216\u6839\u76EE\u5F55: ${contextDir}`
+    );
+  }
+  mkdirSync3(contextDir, { recursive: true });
   let failOn;
   try {
     failOn = parseFailOn(env.INPUT_FAIL_ON || "high");
@@ -10905,6 +10921,7 @@ async function runPrReview(env = process.env, options = {}) {
     rawResultFile,
     chunkPlan,
     reviewPlan,
+    inventory,
     configuredThinking,
     concurrency,
     githubToken,
