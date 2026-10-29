@@ -218,7 +218,13 @@ export async function runPrReview(
     );
   }
 
-  if (auditModeRaw === "codebase") {
+  const isSecurityAudit =
+    auditModeRaw === "codebase" ||
+    (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") ||
+    (env.INPUT_REPORT_TITLE || "").includes("安全审计") ||
+    (env.INPUT_COMMENT_MARKER || "").includes("security-audit");
+
+  if (isSecurityAudit) {
     const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls")
       .split(",")
       .map((s) => s.trim().toLowerCase())

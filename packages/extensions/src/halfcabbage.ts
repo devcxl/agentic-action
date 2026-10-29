@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -81,20 +82,6 @@ function getStoredAuth(): { key?: string; baseUrl?: string } {
   }
 }
 
-function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  if (!signal) return timeoutSignal;
-  if (typeof AbortSignal.any === "function") {
-    return AbortSignal.any([signal, timeoutSignal]);
-  }
-  const controller = new AbortController();
-  const onAbort = () => controller.abort(signal.reason);
-  const onTimeout = () => controller.abort(timeoutSignal.reason);
-  signal.addEventListener("abort", onAbort, { once: true });
-  timeoutSignal.addEventListener("abort", onTimeout, { once: true });
-  return controller.signal;
-}
-
 /** 拉取 New API /v1/models 的模型 ID 列表，失败时抛错由调用方降级 */
 async function fetchModelIds(baseUrl: string, apiKey: string): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
@@ -150,7 +137,8 @@ let inFlightModelIds: Promise<string[] | null> | null = null;
 let inFlightCatalog: Promise<Record<string, ModelsDevModel>> | null = null;
 
 function requestModelIds(baseUrl: string, apiKey: string): Promise<string[] | null> {
-  const key = `${baseUrl}|${apiKey.slice(-6)}`;
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const key = `${baseUrl}|${keyHash}`;
   if (!inFlightModelIds || inFlightModelIdsKey !== key) {
     inFlightModelIdsKey = key;
     inFlightModelIds = fetchModelIds(baseUrl, apiKey)

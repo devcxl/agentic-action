@@ -506,43 +506,34 @@ function listFilesRecursively(
   return acc;
 }
 
-/**
- * Collect a codebase/directory snapshot as a synthetic `DiffInventory`
- * so `security-audit` can audit third-party repositories, vendor directories,
- * or extracted archives without requiring a base git commit or PR diff.
- */
-export function collectSnapshotInventory(
-  options: CollectSnapshotOptions,
-): DiffInventory {
-  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
-  const outDir = resolve(repoCwd, options.outDir);
-  const patchDir = join(outDir, "patches");
-  const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetCandidate = resolve(repoCwd, rawTarget);
-  if (!existsSync(targetCandidate)) {
-    throw new Error(`target_path 不存在: ${rawTarget}`);
-  }
-  const realRepoCwd = realpathSync(repoCwd);
-  const targetAbs = realpathSync(targetCandidate);
-  const relCheck = relative(realRepoCwd, targetAbs);
-  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
-  }
+interface SnapshotFilterResult {
+  files: DiffFileEntry[];
+  fileContents: Map<string, string>;
+}
 
-  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
-  const maxFiles = options.maxFiles ?? 0;
-  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
-  const userExcludes = options.excludes ?? [];
-  const userIncludes = options.includes ?? [];
-  const noDefaultExcludes = options.noDefaultExcludes ?? false;
+function filterSnapshotCandidates(params: {
+  absFiles: readonly string[];
+  realRepoCwd: string;
+  targetAbs: string;
+  includeRes: readonly RegExp[];
+  excludeRes: readonly RegExp[];
+  extraExcludeRes: readonly RegExp[];
+  maxFileBytes: number;
+  maxSnapshotBytes: number;
+  skipped: SkippedFiles;
+}): SnapshotFilterResult {
+  const {
+    absFiles,
+    realRepoCwd,
+    targetAbs,
+    includeRes,
+    excludeRes,
+    extraExcludeRes,
+    maxFileBytes,
+    maxSnapshotBytes,
+    skipped,
+  } = params;
 
-  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
-  const excludeRes = defaultPatterns.map(globToRegExp);
-  const extraExcludeRes = userExcludes.map(globToRegExp);
-  const includeRes = userIncludes.map(globToRegExp);
-
-  const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
-  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
   const files: DiffFileEntry[] = [];
   const fileContents = new Map<string, string>();
   let totalSnapshotBytes = 0;
@@ -550,7 +541,7 @@ export function collectSnapshotInventory(
   for (const absPath of absFiles) {
     const path = relative(realRepoCwd, absPath).split("\\").join("/");
     const targetRelPath = relative(targetAbs, absPath).split("\\").join("/") || path;
-    const matchesPathOrTargetRel = (patterns: RegExp[]): boolean =>
+    const matchesPathOrTargetRel = (patterns: readonly RegExp[]): boolean =>
       matchesAny(path, patterns) ||
       (targetRelPath !== path && matchesAny(targetRelPath, patterns));
 
@@ -633,28 +624,15 @@ export function collectSnapshotInventory(
     });
   }
 
-  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
-  if (maxFiles > 0 && files.length > maxFiles) {
-    for (const file of files.slice(maxFiles)) {
-      fileContents.delete(file.path);
-      skipped.excluded.push({
-        path: file.path,
-        reason: `over-max-files(${maxFiles})`,
-        added: file.added,
-        deleted: file.deleted,
-      });
-    }
-    files.length = maxFiles;
-  }
-  files.sort((a, b) => a.path.localeCompare(b.path));
+  return { files, fileContents };
+}
 
-  if (files.length === 0) {
-    throw new Error(`target_path (${rawTarget}) 下未找到可审计的源码文件`);
-  }
-
-  rmSync(outDir, { recursive: true, force: true });
-  mkdirSync(patchDir, { recursive: true });
-
+function writeSnapshotPatches(
+  files: DiffFileEntry[],
+  fileContents: Map<string, string>,
+  patchDir: string,
+  maxFileBytes: number,
+): void {
   let index = 0;
   for (const file of files) {
     index += 1;
@@ -685,6 +663,85 @@ export function collectSnapshotInventory(
       file.readVia = `read ${file.patch} （分 ${file.pages} 页，用 offset/limit 逐页读）`;
     }
   }
+}
+
+/**
+ * Collect a codebase/directory snapshot as a synthetic `DiffInventory`
+ * so `security-audit` can audit third-party repositories, vendor directories,
+ * or extracted archives without requiring a base git commit or PR diff.
+ */
+export function collectSnapshotInventory(
+  options: CollectSnapshotOptions,
+): DiffInventory {
+  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const outDir = resolve(repoCwd, options.outDir);
+  const patchDir = join(outDir, "patches");
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  const relEarly = relative(repoCwd, targetCandidate);
+  if (isPathEscaping(relEarly)) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
+  }
+  if (!existsSync(targetCandidate)) {
+    throw new Error(`target_path 不存在: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
+  }
+
+  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
+  const maxFiles = options.maxFiles ?? 0;
+  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
+  const userExcludes = options.excludes ?? [];
+  const userIncludes = options.includes ?? [];
+  const noDefaultExcludes = options.noDefaultExcludes ?? false;
+
+  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
+  const excludeRes = defaultPatterns.map(globToRegExp);
+  const extraExcludeRes = userExcludes.map(globToRegExp);
+  const includeRes = userIncludes.map(globToRegExp);
+
+  const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
+  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
+
+  const { files, fileContents } = filterSnapshotCandidates({
+    absFiles,
+    realRepoCwd,
+    targetAbs,
+    includeRes,
+    excludeRes,
+    extraExcludeRes,
+    maxFileBytes,
+    maxSnapshotBytes,
+    skipped,
+  });
+
+  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
+  if (maxFiles > 0 && files.length > maxFiles) {
+    for (const file of files.slice(maxFiles)) {
+      fileContents.delete(file.path);
+      skipped.excluded.push({
+        path: file.path,
+        reason: `over-max-files(${maxFiles})`,
+        added: file.added,
+        deleted: file.deleted,
+      });
+    }
+    files.length = maxFiles;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+
+  if (files.length === 0) {
+    throw new Error(`target_path (${rawTarget}) 下未找到可审计的源码文件`);
+  }
+
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(patchDir, { recursive: true });
+
+  writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes);
 
   return {
     baseSha: "SNAPSHOT",

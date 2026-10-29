@@ -259,7 +259,7 @@ runs:
       with:
         name: ${{ inputs.artifact_name }}
         path: ${{ steps.audit.outputs.context_dir }}
-        include-hidden-files: true
+        include-hidden-files: false
         retention-days: 14
         if-no-files-found: warn
 

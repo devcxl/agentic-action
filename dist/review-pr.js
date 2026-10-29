@@ -8943,33 +8943,18 @@ function listFilesRecursively(repoCwd, currentDir, skipped, acc = []) {
   }
   return acc;
 }
-function collectSnapshotInventory(options) {
-  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
-  const outDir = resolve(repoCwd, options.outDir);
-  const patchDir = join(outDir, "patches");
-  const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetCandidate = resolve(repoCwd, rawTarget);
-  if (!existsSync(targetCandidate)) {
-    throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
-  }
-  const realRepoCwd = realpathSync(repoCwd);
-  const targetAbs = realpathSync(targetCandidate);
-  const relCheck = relative(realRepoCwd, targetAbs);
-  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
-  }
-  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
-  const maxFiles = options.maxFiles ?? 0;
-  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
-  const userExcludes = options.excludes ?? [];
-  const userIncludes = options.includes ?? [];
-  const noDefaultExcludes = options.noDefaultExcludes ?? false;
-  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
-  const excludeRes = defaultPatterns.map(globToRegExp);
-  const extraExcludeRes = userExcludes.map(globToRegExp);
-  const includeRes = userIncludes.map(globToRegExp);
-  const skipped = { excluded: [], binary: [], empty: [] };
-  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
+function filterSnapshotCandidates(params) {
+  const {
+    absFiles,
+    realRepoCwd,
+    targetAbs,
+    includeRes,
+    excludeRes,
+    extraExcludeRes,
+    maxFileBytes,
+    maxSnapshotBytes,
+    skipped
+  } = params;
   const files = [];
   const fileContents = /* @__PURE__ */ new Map();
   let totalSnapshotBytes = 0;
@@ -9048,25 +9033,9 @@ function collectSnapshotInventory(options) {
       oversized: false
     });
   }
-  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
-  if (maxFiles > 0 && files.length > maxFiles) {
-    for (const file of files.slice(maxFiles)) {
-      fileContents.delete(file.path);
-      skipped.excluded.push({
-        path: file.path,
-        reason: `over-max-files(${maxFiles})`,
-        added: file.added,
-        deleted: file.deleted
-      });
-    }
-    files.length = maxFiles;
-  }
-  files.sort((a, b) => a.path.localeCompare(b.path));
-  if (files.length === 0) {
-    throw new Error(`target_path (${rawTarget}) \u4E0B\u672A\u627E\u5230\u53EF\u5BA1\u8BA1\u7684\u6E90\u7801\u6587\u4EF6`);
-  }
-  rmSync(outDir, { recursive: true, force: true });
-  mkdirSync(patchDir, { recursive: true });
+  return { files, fileContents };
+}
+function writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes) {
   let index = 0;
   for (const file of files) {
     index += 1;
@@ -9093,6 +9062,69 @@ function collectSnapshotInventory(options) {
       file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
     }
   }
+}
+function collectSnapshotInventory(options) {
+  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const outDir = resolve(repoCwd, options.outDir);
+  const patchDir = join(outDir, "patches");
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  const relEarly = relative(repoCwd, targetCandidate);
+  if (isPathEscaping(relEarly)) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
+  }
+  if (!existsSync(targetCandidate)) {
+    throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
+  }
+  const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
+  const maxFiles = options.maxFiles ?? 0;
+  const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
+  const userExcludes = options.excludes ?? [];
+  const userIncludes = options.includes ?? [];
+  const noDefaultExcludes = options.noDefaultExcludes ?? false;
+  const defaultPatterns = noDefaultExcludes ? [] : DEFAULT_EXCLUDES;
+  const excludeRes = defaultPatterns.map(globToRegExp);
+  const extraExcludeRes = userExcludes.map(globToRegExp);
+  const includeRes = userIncludes.map(globToRegExp);
+  const skipped = { excluded: [], binary: [], empty: [] };
+  const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
+  const { files, fileContents } = filterSnapshotCandidates({
+    absFiles,
+    realRepoCwd,
+    targetAbs,
+    includeRes,
+    excludeRes,
+    extraExcludeRes,
+    maxFileBytes,
+    maxSnapshotBytes,
+    skipped
+  });
+  files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
+  if (maxFiles > 0 && files.length > maxFiles) {
+    for (const file of files.slice(maxFiles)) {
+      fileContents.delete(file.path);
+      skipped.excluded.push({
+        path: file.path,
+        reason: `over-max-files(${maxFiles})`,
+        added: file.added,
+        deleted: file.deleted
+      });
+    }
+    files.length = maxFiles;
+  }
+  files.sort((a, b) => a.path.localeCompare(b.path));
+  if (files.length === 0) {
+    throw new Error(`target_path (${rawTarget}) \u4E0B\u672A\u627E\u5230\u53EF\u5BA1\u8BA1\u7684\u6E90\u7801\u6587\u4EF6`);
+  }
+  rmSync(outDir, { recursive: true, force: true });
+  mkdirSync(patchDir, { recursive: true });
+  writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes);
   return {
     baseSha: "SNAPSHOT",
     baseInput: rawTarget,
@@ -10696,7 +10728,8 @@ async function runPrReview(env = process.env, options = {}) {
       `\u975E\u6CD5 audit_mode: ${env.INPUT_AUDIT_MODE}\uFF08\u4EC5\u652F\u6301 auto\u3001codebase\u3001diff\uFF09`
     );
   }
-  if (auditModeRaw === "codebase") {
+  const isSecurityAudit = auditModeRaw === "codebase" || (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") || (env.INPUT_REPORT_TITLE || "").includes("\u5B89\u5168\u5BA1\u8BA1") || (env.INPUT_COMMENT_MARKER || "").includes("security-audit");
+  if (isSecurityAudit) {
     const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
     const dangerousTools = rawTools.filter(
       (t) => t === "bash" || t === "write" || t === "edit"
