@@ -7712,7 +7712,7 @@ function isPathEscaping(rel) {
       depth++;
     }
   }
-  return depth < 0 || norm.startsWith("..");
+  return depth < 0;
 }
 
 // packages/core/src/review/budget.ts
@@ -7734,8 +7734,13 @@ var DEFAULT_EXCLUDES = [
   // Credential and secret files
   "**/.env",
   "**/.env.*",
-  "**/*credential*",
-  "**/*secret*",
+  "**/secrets/**",
+  "**/*secret*.json",
+  "**/*secret*.yaml",
+  "**/*secret*.yml",
+  "**/*credential*.json",
+  "**/*credential*.yaml",
+  "**/*credential*.yml",
   "**/*.tfstate*",
   "**/service-account*.json",
   "**/*.pem",

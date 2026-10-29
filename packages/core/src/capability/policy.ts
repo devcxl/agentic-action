@@ -411,6 +411,6 @@ export function isPathEscaping(rel: string): boolean {
       depth++;
     }
   }
-  return depth < 0 || norm.startsWith("..");
+  return depth < 0;
 }
 
