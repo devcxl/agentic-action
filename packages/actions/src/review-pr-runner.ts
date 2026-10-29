@@ -28,6 +28,7 @@ import {
 } from "@agentic-action/adapters";
 import {
   BUILTIN_REVIEW_SYSTEM_PROMPT,
+  BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT,
   buildReviewPrompt,
 } from "./review-pr-linkage.ts";
 
@@ -108,6 +109,14 @@ export async function executeReviewChunks(params: {
     existsSync(resolvedPromptPath) &&
     statSync(resolvedPromptPath).isFile();
 
+  const isSnapshotMode = params.inventory?.baseSha === "SNAPSHOT";
+  const isSecurityAudit =
+    env.INPUT_SECURITY_AUDIT === "true" ||
+    defaultPromptRel.includes("security-audit");
+  const defaultContract = isSecurityAudit
+    ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT
+    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+
   // 1. Prefer trusted ACTION_PATH (external action installation directory) if available
   const trustedActionPrompt = process.env.ACTION_PATH
     ? resolve(process.env.ACTION_PATH, defaultPromptRel)
@@ -117,21 +126,19 @@ export async function executeReviewChunks(params: {
     existsSync(trustedActionPrompt) &&
     statSync(trustedActionPrompt).isFile();
 
-  const allChangedPaths = new Set<string>([
-    ...(params.inventory?.files.map((f) => f.path) ?? []),
-    ...(params.inventory?.skipped.excluded.map((s) => s.path) ?? []),
-    ...(params.inventory?.skipped.binary.map((s) => s.path) ?? []),
-    ...(params.inventory?.skipped.empty.map((s) => s.path) ?? []),
-    ...chunkPlan.filesIncluded.map((f) => f.path),
-  ]);
-
+  // Tamper detection is only valid in PR diff mode where untrusted PR diff could tamper prompts
   const isPromptTamperedInPr =
-    allChangedPaths.has(defaultPromptRel) ||
-    allChangedPaths.has(".github/prompts/pr-review.md") ||
-    allChangedPaths.has(".github/prompts/security-audit.md") ||
-    [...allChangedPaths].some((p) => p.startsWith(".github/prompts/"));
+    !isSnapshotMode &&
+    Boolean(params.inventory) &&
+    [
+      ...(params.inventory?.files.map((f) => f.path) ?? []),
+      ...(params.inventory?.skipped.excluded.map((s) => s.path) ?? []),
+      ...(params.inventory?.skipped.binary.map((s) => s.path) ?? []),
+      ...(params.inventory?.skipped.empty.map((s) => s.path) ?? []),
+      ...chunkPlan.filesIncluded.map((f) => f.path),
+    ].some((p) => p.startsWith(".github/prompts/"));
 
-  let baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+  let baseReviewContract = defaultContract;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
     throw new Error(
       `指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`,
@@ -142,7 +149,7 @@ export async function executeReviewChunks(params: {
     logger.warn(
       `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel})，为防止门禁绕过，本次审查强制使用受信任的内置契约`,
     );
-    baseReviewContract = BUILTIN_REVIEW_SYSTEM_PROMPT;
+    baseReviewContract = defaultContract;
   } else if (isTrustedPromptFile) {
     baseReviewContract = readFileSync(trustedActionPrompt, "utf8");
   } else if (isPromptValidFile) {

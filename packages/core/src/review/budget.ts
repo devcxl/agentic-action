@@ -23,7 +23,11 @@ export const DEFAULT_EXCLUDES = [
   "**/__snapshots__/**",
   "**/*.snap",
   // Credential and secret files
-  "**/.env*",
+  "**/.env",
+  "**/.env.local",
+  "**/.env.*.local",
+  "**/.env.production",
+  "**/.env.development",
   "**/.npmrc",
   "**/.netrc",
   "**/.pypirc",
