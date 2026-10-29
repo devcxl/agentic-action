@@ -135,10 +135,10 @@ jobs:
           persist-credentials: false
 
       - name: Run Pi Third-Party Security Audit
-        uses: devcxl/agentic-action/security-audit@main
+        uses: devcxl/agentic-action/security-audit@v2
         with:
           provider: 'half-cabbage'
-          model: 'minimax-m3'
+          model: 'deepseek-v4.1-flash'
           thinking: 'high'
           audit_mode: 'codebase'
           target_path: 'third-party-target'

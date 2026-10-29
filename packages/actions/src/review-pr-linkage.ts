@@ -81,32 +81,32 @@ export function buildReviewPrompt(params: {
     extraPrompt,
   } = params;
 
-  const targetChunkIndex = chunk?.index ?? 1;
-  const combinedChunkPatch = join(
-    contextDir,
-    "chunks",
-    `chunk-${String(targetChunkIndex).padStart(3, "0")}.patch`,
-  );
-
   const lines: string[] = [
     `执行 PR ${prNumber ? `#${prNumber} ` : ""}的代码审查。`,
     "",
     `审查上下文目录（<CONTEXT_DIR>）位于：\`${contextDir}\``,
     "",
-    `1. 直接调用 \`read\` 读取预合并的当前分块补丁文件 \`${combinedChunkPatch}\`（已包含本分块所有非超大文件的完整 diff，无需再逐个读取 \`patches/*.patch\`）以及 \`${join(contextDir, "REVIEW_CONTEXT.md")}\`。`,
   ];
 
   if (chunk) {
+    const combinedChunkPatch = join(
+      contextDir,
+      "chunks",
+      `chunk-${String(chunk.index).padStart(3, "0")}.patch`,
+    );
     lines.push(
+      `1. 直接调用 \`read\` 读取预合并的当前分块补丁文件 \`${combinedChunkPatch}\`（已包含本分块所有非超大文件的完整 diff，无需再逐个读取 \`patches/*.patch\`）以及 \`${join(contextDir, "REVIEW_CONTEXT.md")}\`。`,
       `2. 本次调用仅负责审查 Chunk #${chunk.index}（共计划 ${plannedChunks ?? 1}/${totalChunks ?? 1} 个分块），包含以下文件：`,
       ...chunk.files.map((f) => `   - \`${f}\``),
-      `3. 仅在 \`${combinedChunkPatch}\` 标注某文件为 OVERSIZED 或某处跨文件边界确需核实时，才补充读取对应文件（总工具轮次严格控制在 3 轮以内）。`,
+      `3. 若遇到标注为 OVERSIZED 的文件，可按提示用 offset/limit 分页读取对应的单文件补丁 \`${join(contextDir, "patches")}/<name>.patch\`；需要对照改动前版本时可读取 \`${join(contextDir, "base")}/<name>\`。`,
       "4. 审查完成后立即调用 `submit_review` 工具提交本 chunk 的结构化审查结论。",
     );
   } else {
     lines.push(
-      `2. 仅在 \`${combinedChunkPatch}\` 标注某文件为 OVERSIZED 或某处跨文件边界确需核实时，才补充读取对应文件（总工具轮次严格控制在 3 轮以内）。`,
-      "3. 审查完成后立即调用 `submit_review` 工具提交结构化审查结论。",
+      `1. 先读取 \`${join(contextDir, "REVIEW_CONTEXT.md")}\` 与 \`${join(contextDir, "manifest.json")}\` 获取审查清单。`,
+      `2. 本次为全量代码审查，请按 manifest 列出的分块顺序依次读取 \`${join(contextDir, "chunks")}\` 目录下的各分块补丁。`,
+      `3. 若遇到标注为 OVERSIZED 的文件，可读取 \`${join(contextDir, "patches")}/<name>.patch\`；需要对照改动前版本时读取 \`${join(contextDir, "base")}/<name>\`。`,
+      "4. 审查完成后立即调用 `submit_review` 工具提交结构化审查结论。",
     );
   }
 

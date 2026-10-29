@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ExitCode,
@@ -218,10 +218,15 @@ export async function runPrReview(
     relToCwd !== "" &&
     relToCwd !== "." &&
     !relToCwd.startsWith("../");
+  const contextBaseName = basename(contextDir);
+  const isDedicatedContextDir =
+    contextBaseName.startsWith(".pi-") ||
+    contextBaseName.startsWith("pi-") ||
+    contextBaseName.endsWith("-context");
 
-  if (!isInsideTemp && !isSubdirOfCwd) {
+  if (!isInsideTemp && (!isSubdirOfCwd || !isDedicatedContextDir)) {
     return failInfra(
-      `context_dir 必须位于系统临时目录 (${tempBase}) 或工作区子目录下: ${contextDir}`,
+      `context_dir 必须位于系统临时目录 (${tempBase}) 或工作区专有前缀子目录下 (.pi- / pi-): ${contextDir}`,
       false,
     );
   }

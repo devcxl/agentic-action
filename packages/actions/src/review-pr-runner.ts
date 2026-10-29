@@ -100,27 +100,11 @@ export function resolveReviewContract(params: {
       ? resolve(process.env.ACTION_PATH, defaultPromptRel)
       : undefined;
 
-  const isPromptTamperedInPr =
-    !isSnapshotMode &&
-    (!inventory ||
-      [
-        ...inventory.files.map((f) => f.path),
-        ...inventory.skipped.excluded.map((s) => s.path),
-        ...inventory.skipped.binary.map((s) => s.path),
-        ...inventory.skipped.empty.map((s) => s.path),
-        ...chunkPlan.filesIncluded.map((f) => f.path),
-      ].some(
-        (p) =>
-          p === defaultPromptRel ||
-          p.startsWith(".github/prompts/") ||
-          p === ".github/prompts/pr-review.md" ||
-          p === ".github/prompts/security-audit.md",
-      ));
-
-  if (isPromptTamperedInPr) {
-    logger.warn(
-      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel}) 或无法验证完整性，已强制切换为内置契约`,
-    );
+  // In local checkout (self-test / local action uses: ./), files in actionRoot belong to the PR under review.
+  // ALWAYS use trusted builtin contract to guarantee zero prompt tampering, unless an external ACTION_PATH is provided.
+  if (isLocalCheckout) {
+    const trustedText = tryReadPromptFile(trustedActionPath);
+    if (trustedText) return trustedText;
     return defaultContract;
   }
 
