@@ -61,6 +61,10 @@ inputs:
     description: 'Allow partial planned chunk coverage without returning InvalidReport (true/false)'
     required: false
     default: 'false'
+  include:
+    description: 'Optional comma-separated glob patterns to include in the review'
+    required: false
+    default: ''
   exclude:
     description: 'Additional comma-separated glob patterns to exclude from review'
     required: false
@@ -207,6 +211,7 @@ runs:
       id: review
       shell: bash
       env:
+        ACTION_PATH: ${{ github.action_path }}/..
         ACTION_ROOT: ${{ github.action_path }}/..
         INPUT_MODEL: ${{ inputs.model }}
         INPUT_PROVIDER: ${{ inputs.provider }}
@@ -222,6 +227,7 @@ runs:
         INPUT_MAX_FILE_BYTES: ${{ inputs.max_file_bytes }}
         INPUT_CONCURRENCY: ${{ inputs.concurrency }}
         INPUT_ALLOW_PARTIAL: ${{ inputs.allow_partial }}
+        INPUT_INCLUDE: ${{ inputs.include }}
         INPUT_EXCLUDE: ${{ inputs.exclude }}
         INPUT_LINK_ISSUES: ${{ inputs.link_issues }}
         INPUT_INCLUDE_ISSUE_BODY: ${{ inputs.include_issue_body }}
@@ -260,7 +266,7 @@ runs:
       env:
         GATE_CODE: ${{ steps.review.outputs.gate_code }}
       run: |
-        case "${GATE_CODE:-0}" in
+        case "${GATE_CODE:-30}" in
           0)
             exit 0
             ;;
@@ -277,7 +283,7 @@ runs:
             exit 30
             ;;
           *)
-            echo "::error::PR review exited with unexpected status ${GATE_CODE}"
+            echo "::error::PR review exited with unexpected status ${GATE_CODE:-empty}"
             exit 30
             ;;
         esac

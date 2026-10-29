@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import type {
   AgentSpec,
   AgentUsage,
   ChunkPlan,
   ChunkReport,
+  DiffInventory,
   ReviewPlan,
   ThinkingLevel,
 } from "@agentic-action/contracts";
@@ -12,6 +13,7 @@ import {
   buildSandboxSpec,
   deriveCapabilityPolicy,
   extractJsonReport,
+  isPathEscaping,
   redactText,
   toChunkReport,
   validateSubmitReviewInput,
@@ -26,12 +28,18 @@ import {
 } from "@agentic-action/adapters";
 import {
   BUILTIN_REVIEW_SYSTEM_PROMPT,
+  BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT,
   buildReviewPrompt,
 } from "./review-pr-linkage.ts";
 
 function resolveSubmitReviewExtensionPath(actionRoot: string): string | undefined {
-  const candidate = join(actionRoot, "packages/extensions/src/submit-review.ts");
-  return existsSync(candidate) ? candidate : undefined;
+  const candidates = [
+    join(actionRoot, "packages/extensions/src/submit-review.ts"),
+    ...(process.env.ACTION_PATH
+      ? [join(process.env.ACTION_PATH, "packages/extensions/src/submit-review.ts")]
+      : []),
+  ];
+  return candidates.find((c) => existsSync(c));
 }
 
 export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
@@ -48,6 +56,69 @@ export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
   return merged;
 }
 
+function tryReadPromptFile(path?: string): string | undefined {
+  if (!path) return undefined;
+  try {
+    if (existsSync(path) && statSync(path).isFile()) {
+      return readFileSync(path, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
+export function resolveReviewContract(params: {
+  actionRoot: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  inventory?: DiffInventory;
+  chunkPlan: ChunkPlan;
+  logger: Logger;
+}): string {
+  const { actionRoot, cwd, env, inventory, chunkPlan, logger } = params;
+  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
+  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
+  const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
+  const relToActionRoot = relative(actionRoot, resolvedPromptPath);
+
+  if (explicitPromptRel && (!relToActionRoot || isPathEscaping(relToActionRoot))) {
+    throw new Error(`指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`);
+  }
+
+  const isSnapshotMode = inventory?.baseSha === "SNAPSHOT";
+  const isSecurityAudit =
+    env.INPUT_SECURITY_AUDIT === "true" ||
+    defaultPromptRel.includes("security-audit");
+  const defaultContract = isSecurityAudit
+    ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT
+    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+
+  const isLocalCheckout = resolve(actionRoot) === resolve(cwd);
+  const trustedActionPath =
+    process.env.ACTION_PATH && resolve(process.env.ACTION_PATH) !== resolve(cwd)
+      ? resolve(process.env.ACTION_PATH, defaultPromptRel)
+      : undefined;
+
+  // In local checkout (self-test / local action uses: ./), files in actionRoot belong to the PR under review.
+  // ALWAYS use trusted builtin contract to guarantee zero prompt tampering, unless an external ACTION_PATH is provided.
+  if (isLocalCheckout) {
+    const trustedText = tryReadPromptFile(trustedActionPath);
+    if (trustedText) return trustedText;
+    return defaultContract;
+  }
+
+  const trustedText = tryReadPromptFile(trustedActionPath);
+  if (trustedText) return trustedText;
+
+  const actionRootText = tryReadPromptFile(resolvedPromptPath);
+  if (actionRootText && (!isLocalCheckout || explicitPromptRel)) {
+    return actionRootText;
+  }
+
+  return defaultContract;
+}
+
 export async function executeReviewChunks(params: {
   cwd: string;
   actionRoot: string;
@@ -58,6 +129,7 @@ export async function executeReviewChunks(params: {
   rawResultFile: string;
   chunkPlan: ChunkPlan;
   reviewPlan: ReviewPlan;
+  inventory?: DiffInventory;
   configuredThinking: ThinkingLevel;
   concurrency: number;
   githubToken: string;
@@ -87,10 +159,15 @@ export async function executeReviewChunks(params: {
     sleepImpl,
   } = params;
 
-  const defaultPromptPath = join(actionRoot, ".github/prompts/pr-review.md");
-  const baseReviewContract = existsSync(defaultPromptPath)
-    ? readFileSync(defaultPromptPath, "utf8")
-    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const baseReviewContract = resolveReviewContract({
+    actionRoot,
+    cwd,
+    env,
+    inventory: params.inventory,
+    chunkPlan,
+    logger,
+  });
+
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt
     ? `${baseReviewContract}\n\n${userAppendPrompt}`
@@ -164,12 +241,17 @@ export async function executeReviewChunks(params: {
         `Reviewing chunk #${chunk.index}/${chunkPlan.plannedChunks} (${chunk.files.length} files)`,
       );
 
+      const chunkTimeoutMs =
+        Math.max(10_000, Number(env.INPUT_TIMEOUT_MS || "600000") || 600_000);
+
       const { result: piRes, durationsMs } = await runPiWithRetry(sandbox, {
         piBin,
         cwd,
         mode: "json",
         requiredTool: "submit_review",
+        timeoutMs: chunkTimeoutMs,
         maxRetries: 2,
+        baseDelayMs: 1500,
         sleepImpl,
       });
 
@@ -198,7 +280,7 @@ export async function executeReviewChunks(params: {
       try {
         const fallbackSource = existsSync(reportFile)
           ? readFileSync(reportFile, "utf8")
-          : piRes.stdout;
+          : (piRes.textOutput || piRes.stdout);
         if (fallbackSource && fallbackSource.trim()) {
           const extracted = extractJsonReport(fallbackSource);
           const validated = validateSubmitReviewInput({

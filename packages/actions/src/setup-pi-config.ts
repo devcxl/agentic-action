@@ -26,10 +26,14 @@ export function setupPiConfig(
   options: SetupPiConfigOptions = {},
 ): SetupPiConfigResult {
   const __dirname = dirname(fileURLToPath(import.meta.url));
+  const distParent = resolve(__dirname, "..");
+  const defaultActionPath = existsSync(join(distParent, "packages/extensions/src"))
+    ? distParent
+    : resolve(__dirname, "../../..");
   const actionPath =
     options.actionPath ||
     process.env.ACTION_PATH ||
-    resolve(__dirname, "../../..");
+    defaultActionPath;
   const agentDir =
     options.agentDir ||
     process.env.PI_CODING_AGENT_DIR ||
@@ -84,7 +88,13 @@ export function setupPiConfig(
       ) {
         continue;
       }
-      if (!entry.name.endsWith(".ts") && !entry.name.endsWith(".js")) continue;
+      if (
+        !entry.name.endsWith(".ts") &&
+        !entry.name.endsWith(".js") &&
+        !entry.name.endsWith(".mjs")
+      ) {
+        continue;
+      }
       copyFileSync(join(srcExtDir, entry.name), join(extTargetDir, entry.name));
       installedExtensions.push(entry.name);
     }

@@ -40,11 +40,26 @@ async function bundleEntry(srcRel, outPath) {
       js: "import { createRequire as __createRequire } from 'node:module'; const require = __createRequire(import.meta.url);",
     },
     outfile: outPath,
-    logLevel: "silent",
+    logLevel: "warning",
   });
 }
 
+const REQUIRED_EXTENSIONS = [
+  "packages/extensions/src/ci-logger.ts",
+  "packages/extensions/src/halfcabbage.ts",
+  "packages/extensions/src/submit-review.ts",
+];
+
+function verifyRequiredExtensions() {
+  for (const rel of REQUIRED_EXTENSIONS) {
+    if (!existsSync(join(ROOT, rel))) {
+      throw new Error(`Missing required runtime extension: ${rel}`);
+    }
+  }
+}
+
 async function main() {
+  verifyRequiredExtensions();
   if (isCheck) {
     const tmp = mkdtempSync(join(tmpdir(), "agentic-action-dist-check-"));
     try {

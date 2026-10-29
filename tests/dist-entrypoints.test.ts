@@ -94,4 +94,97 @@ process.stdout.write("hello from bundled runner\\n");
     expect(triageOutText).toContain("verdict=skipped_existing");
     expect(triageOutText).toContain(`exit_code=${ExitCode.Ok}`);
   });
+
+  it("audits a third-party directory in codebase snapshot mode without git history", async () => {
+    const { runPrReview } = await import("@agentic-action/actions");
+    const thirdPartyDir = join(workDir, "vendor-pkg");
+    mkdirSync(thirdPartyDir, { recursive: true });
+    writeFileSync(
+      join(thirdPartyDir, "index.js"),
+      'const { exec } = require("node:child_process");\nexports.run = (cmd) => exec(cmd);\n',
+      "utf8",
+    );
+
+    const fakePi = join(workDir, "fake-pi-audit.mjs");
+    writeFileSync(
+      fakePi,
+      `#!/usr/bin/env node
+const event = {
+  type: "tool_execution_end",
+  toolName: "submit_review",
+  isError: false,
+  result: {
+    details: {
+      summary: "Found command injection in vendor-pkg/index.js.",
+      verdict: "request_changes",
+      findings: [
+        {
+          file: "vendor-pkg/index.js",
+          line: 2,
+          severity: "high",
+          category: "security",
+          title: "Unvalidated command execution via child_process.exec",
+          detail: "exports.run passes untrusted cmd directly to child_process.exec.",
+          suggestion: "Use execFile with fixed command and argument array."
+        }
+      ],
+      files_reviewed: 1
+    }
+  }
+};
+process.stdout.write(JSON.stringify(event) + "\\n");
+`,
+      { encoding: "utf8", mode: 0o755 },
+    );
+
+    const ghOut = join(workDir, "audit_out.txt");
+    const stepSummary = join(workDir, "step_summary.md");
+    writeFileSync(ghOut, "", "utf8");
+    writeFileSync(stepSummary, "", "utf8");
+
+    const code = await runPrReview(
+      {
+        PATH: process.env.PATH,
+        PI_BIN: fakePi,
+        ACTION_ROOT: rootDir,
+        RUNNER_TEMP: workDir,
+        GITHUB_OUTPUT: ghOut,
+        GITHUB_STEP_SUMMARY: stepSummary,
+        PI_SUPPRESS_GH_ANNOTATIONS: "1",
+        INPUT_DEFAULT_PROMPT_FILE: ".github/prompts/security-audit.md",
+        INPUT_AUDIT_MODE: "codebase",
+        INPUT_TARGET_PATH: "vendor-pkg",
+        INPUT_REPORT_TITLE: "Pi Agent 第三方代码安全审计",
+        INPUT_COMMENT_MARKER: "pi-security-audit",
+        INPUT_PROVIDER: "openai",
+        INPUT_MODEL: "gpt-4o",
+        INPUT_API_KEY: "test-fake-api-key-value",
+        INPUT_FAIL_ON: "high",
+        INPUT_LINK_ISSUES: "false",
+        INPUT_POST_COMMENT: "false",
+      },
+      { cwd: workDir },
+    );
+
+    expect(code).toBe(ExitCode.GateFailed);
+    const summaryMd = readFileSync(stepSummary, "utf8");
+    expect(summaryMd).toContain("<!-- pi-security-audit:begin -->");
+    expect(summaryMd).toContain("## Pi Agent 第三方代码安全审计");
+    expect(summaryMd).toContain("Unvalidated command execution via child_process.exec");
+
+    const ghOutText = readFileSync(ghOut, "utf8");
+    expect(ghOutText).toContain(`exit_code=${ExitCode.GateFailed}`);
+    expect(ghOutText).toContain("findings_count=1");
+    expect(ghOutText).toContain("pi-security-audit-context");
+
+    const auditReportPath = join(
+      workDir,
+      "pi-security-audit-context/report.json",
+    );
+    expect(existsSync(auditReportPath)).toBe(true);
+    const reportJson = JSON.parse(readFileSync(auditReportPath, "utf8"));
+    expect(reportJson.verdict).toBe("request_changes");
+    expect(reportJson.findings[0].category).toBe("security");
+    expect(reportJson.findings[0].severity).toBe("high");
+  });
 });

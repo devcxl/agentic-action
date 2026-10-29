@@ -1,6 +1,7 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 const PROVIDER_ID = "half-cabbage";
@@ -9,8 +10,22 @@ const DEFAULT_BASE_URL = "https://new-api.devcxl.cn/v1";
 const DEFAULT_CONTEXT_WINDOW = 128_000;
 const DEFAULT_MAX_TOKENS = 32_768;
 
+/** 模型列表缓存有效期 */
 const CACHE_TTL_MS = 120 * 60 * 1000;
-const CACHE_FILE = join(tmpdir(), "pi-halfcabbage-models-cache.json");
+/** models.dev 元数据目录缓存有效期：目录体积大、变更慢，单独放宽 */
+const CATALOG_TTL_MS = 24 * 60 * 60 * 1000;
+/** 单次网络请求超时 */
+const REQUEST_TIMEOUT_MS = 20_000;
+
+/** Pi 的 agent 目录（与 Pi 自身的 auth.json / models.json 同目录） */
+function resolveAgentDir(): string {
+  const override = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (!override) return join(homedir(), ".pi", "agent");
+  return override.startsWith("~") ? join(homedir(), override.slice(1)) : override;
+}
+
+const AGENT_DIR = resolveAgentDir();
+const CACHE_FILE = join(AGENT_DIR, "half-cabbage-models-cache.json");
 
 interface ModelsDevModel {
   name?: string;
@@ -27,11 +42,19 @@ interface ModelsDevModel {
 
 interface CacheEntry {
   baseUrl: string;
+  keyHash?: string;
+  /** 模型列表拉取时间 */
   fetchedAt: number;
+  /** models.dev 元数据目录拉取时间 */
+  catalogFetchedAt: number;
   modelIds: string[];
   catalog: Record<string, ModelsDevModel>;
 }
 
+/**
+ * 调试日志：默认静默。控制台输出会直接写进 TUI，打断边框渲染，
+ * 因此仅在 HALF_CABBAGE_DEBUG=1 时开启。
+ */
 const DEBUG = process.env.HALF_CABBAGE_DEBUG === "1";
 const log = (message: string) => {
   if (DEBUG) console.info(`[half-cabbage] ${message}`);
@@ -44,7 +67,7 @@ function normalizeBaseUrl(url: string): string {
 
 function getStoredAuth(): { key?: string; baseUrl?: string } {
   try {
-    const authPath = join(homedir(), ".pi", "agent", "auth.json");
+    const authPath = join(AGENT_DIR, "auth.json");
     if (!existsSync(authPath)) return {};
     const data = JSON.parse(readFileSync(authPath, "utf8")) as Record<
       string,
@@ -60,10 +83,11 @@ function getStoredAuth(): { key?: string; baseUrl?: string } {
   }
 }
 
-async function fetchModelIds(baseUrl: string, apiKey: string, signal?: AbortSignal): Promise<string[]> {
+/** 拉取 New API /v1/models 的模型 ID 列表，失败时抛错由调用方降级 */
+async function fetchModelIds(baseUrl: string, apiKey: string): Promise<string[]> {
   const response = await fetch(`${baseUrl}/models`, {
     headers: { Authorization: `Bearer ${apiKey}`, Accept: "application/json" },
-    signal,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
 
   if (!response.ok) {
@@ -82,13 +106,14 @@ async function fetchModelIds(baseUrl: string, apiKey: string, signal?: AbortSign
     .sort((a, b) => a.localeCompare(b));
 }
 
+/** 拉取 models.dev 元数据目录，任何失败都静默降级为空目录 */
 async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> {
   const url = process.env.MODELS_DEV_URL ?? "https://models.dev/api.json";
 
   try {
     const response = await fetch(url, {
       headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
 
     if (!response.ok) return {};
@@ -104,6 +129,63 @@ async function fetchModelsDevCatalog(): Promise<Record<string, ModelsDevModel>> 
   }
 }
 
+/**
+ * 进程内共享的在途请求。Pi 启动时会多次触发模型刷新，
+ * 共享同一份请求可避免重复下载（models.dev 目录约 6 MB）。
+ */
+let inFlightModelIdsKey: string | null = null;
+let inFlightModelIds: Promise<string[] | null> | null = null;
+let inFlightCatalog: Promise<Record<string, ModelsDevModel>> | null = null;
+
+function requestModelIds(baseUrl: string, apiKey: string): Promise<string[] | null> {
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const key = `${baseUrl}|${keyHash}`;
+  if (!inFlightModelIds || inFlightModelIdsKey !== key) {
+    inFlightModelIdsKey = key;
+    inFlightModelIds = fetchModelIds(baseUrl, apiKey)
+      .catch((error: unknown) => {
+        log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
+        return null;
+      })
+      .finally(() => {
+        if (inFlightModelIdsKey === key) {
+          inFlightModelIds = null;
+          inFlightModelIdsKey = null;
+        }
+      });
+  }
+  return inFlightModelIds;
+}
+
+function requestCatalog(): Promise<Record<string, ModelsDevModel>> {
+  inFlightCatalog ??= fetchModelsDevCatalog().finally(() => {
+    inFlightCatalog = null;
+  });
+  return inFlightCatalog;
+}
+
+/** 等待共享请求；调用方被取消时立即返回 undefined */
+async function raceSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T | undefined> {
+  if (!signal) return promise;
+  if (signal.aborted) return undefined;
+
+  return await new Promise<T | undefined>((resolve) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      () => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
+/** 合并 models.dev 元数据与兼容性配置，转换为 pi 模型定义 */
 function toPiModel(id: string, meta: ModelsDevModel | undefined) {
   const hasImage = meta?.modalities?.input?.includes("image") ?? false;
   const isReasoning = meta?.reasoning ?? /r1|reasoning|thinking/i.test(id);
@@ -158,58 +240,113 @@ function toPiModel(id: string, meta: ModelsDevModel | undefined) {
   };
 }
 
-function readCache(baseUrl: string): CacheEntry | null {
+function readCache(baseUrl: string, keyHash?: string): CacheEntry | null {
   try {
     if (!existsSync(CACHE_FILE)) return null;
 
-    const entry = JSON.parse(readFileSync(CACHE_FILE, "utf8")) as CacheEntry;
+    const entry = JSON.parse(readFileSync(CACHE_FILE, "utf8")) as Partial<CacheEntry>;
 
     if (entry.baseUrl !== baseUrl || !Array.isArray(entry.modelIds)) return null;
+    if (keyHash && entry.keyHash && entry.keyHash !== keyHash) return null;
 
-    return entry;
+    return {
+      baseUrl: entry.baseUrl,
+      keyHash: entry.keyHash,
+      fetchedAt: entry.fetchedAt ?? 0,
+      catalogFetchedAt: entry.catalogFetchedAt ?? 0,
+      modelIds: entry.modelIds,
+      catalog: entry.catalog ?? {},
+    };
   } catch {
     return null;
   }
 }
 
-function writeCache(baseUrl: string, modelIds: string[], catalog: Record<string, ModelsDevModel>): void {
+/** 原子写入：先写临时文件再 rename，避免并发刷新写出半截 JSON */
+function writeCache(entry: CacheEntry): void {
+  const tempFile = `${CACHE_FILE}.${process.pid}.${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
   try {
-    const entry: CacheEntry = { baseUrl, fetchedAt: Date.now(), modelIds, catalog };
-    writeFileSync(CACHE_FILE, JSON.stringify(entry));
+    mkdirSync(dirname(CACHE_FILE), { recursive: true });
+    writeFileSync(tempFile, JSON.stringify(entry));
+    renameSync(tempFile, CACHE_FILE);
   } catch {
-    // ignore
+    try {
+      unlinkSync(tempFile);
+    } catch {
+      // ignore
+    }
   }
 }
 
-async function loadModels(baseUrl: string, apiKey: string, signal?: AbortSignal, force = false) {
-  const cached = readCache(baseUrl);
+type PiModel = ReturnType<typeof toPiModel>;
+
+function toPiModels(entry: CacheEntry): PiModel[] {
+  return entry.modelIds.map((id) => toPiModel(id, entry.catalog[id]));
+}
+
+async function resolveCatalog(
+  cached: CacheEntry | null,
+  signal?: AbortSignal,
+): Promise<{ models: Record<string, ModelsDevModel>; fetchedAt: number }> {
+  const now = Date.now();
+
+  if (cached && cached.catalogFetchedAt > 0 && now - cached.catalogFetchedAt < CATALOG_TTL_MS) {
+    log(`using cached models.dev catalog (${Object.keys(cached.catalog).length} models)`);
+    return { models: cached.catalog, fetchedAt: cached.catalogFetchedAt };
+  }
+
+  const fetched = await raceSignal(requestCatalog(), signal);
+
+  if (fetched && Object.keys(fetched).length > 0) {
+    return { models: fetched, fetchedAt: Date.now() };
+  }
+
+  if (cached && Object.keys(cached.catalog).length > 0) {
+    log("reusing stale models.dev catalog");
+    return { models: cached.catalog, fetchedAt: cached.catalogFetchedAt };
+  }
+
+  return { models: {}, fetchedAt: 0 };
+}
+
+interface LoadModelsOptions {
+  signal?: AbortSignal;
+  force?: boolean;
+}
+
+async function loadModels(baseUrl: string, apiKey: string, options: LoadModelsOptions = {}) {
+  const { signal, force = false } = options;
+  const keyHash = createHash("sha256").update(apiKey).digest("hex").slice(0, 16);
+  const cached = readCache(baseUrl, keyHash);
 
   if (!force && cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
     log(`using cached model list (${cached.modelIds.length} models)`);
-    return cached.modelIds.map((id) => toPiModel(id, cached.catalog[id]));
+    return toPiModels(cached);
   }
 
   const [modelIds, catalog] = await Promise.all([
-    fetchModelIds(baseUrl, apiKey, signal).catch((error: unknown) => {
-      if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
-        return null;
-      }
-      log(`failed to fetch models: ${error instanceof Error ? error.message : error}`);
-      return null;
-    }),
-    fetchModelsDevCatalog(),
+    raceSignal(requestModelIds(baseUrl, apiKey), signal),
+    resolveCatalog(cached, signal),
   ]);
 
-  if ((modelIds === null || modelIds.length === 0) && cached) {
-    log("using stale cached model list");
-    return cached.modelIds.map((id) => toPiModel(id, cached.catalog[id]));
+  if (!modelIds || modelIds.length === 0) {
+    if (cached) {
+      log("using stale cached model list");
+      return toPiModels(cached);
+    }
+    return [];
   }
 
-  if (modelIds === null) return [];
+  writeCache({
+    baseUrl,
+    keyHash,
+    fetchedAt: Date.now(),
+    catalogFetchedAt: catalog.fetchedAt,
+    modelIds,
+    catalog: catalog.models,
+  });
 
-  if (modelIds.length > 0) writeCache(baseUrl, modelIds, catalog);
-
-  return modelIds.map((id) => toPiModel(id, catalog[id]));
+  return modelIds.map((id) => toPiModel(id, catalog.models[id]));
 }
 
 export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<void> {
@@ -225,7 +362,7 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
     ? "$HALF_CABBAGE_KEY"
     : "$HALF_CABBAGE_API_KEY";
 
-  let initialModels: ReturnType<typeof toPiModel>[] = [];
+  let initialModels: PiModel[] = [];
 
   if (apiKey) {
     initialModels = await loadModels(endpoint, apiKey);
@@ -233,7 +370,7 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
     const cached = readCache(endpoint);
     if (cached) {
       log(`using cached model list without active key (${cached.modelIds.length} models)`);
-      initialModels = cached.modelIds.map((id) => toPiModel(id, cached.catalog[id]));
+      initialModels = toPiModels(cached);
     }
   }
 
@@ -244,6 +381,16 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
     api: "openai-completions",
     models: initialModels,
     refreshModels: async (context) => {
+      if (context.allowNetwork === false) {
+        const cached = readCache(endpoint);
+        if (cached) {
+          log(`offline refresh: using cached model list (${cached.modelIds.length} models)`);
+          initialModels = toPiModels(cached);
+          return initialModels;
+        }
+        return initialModels;
+      }
+
       const activeKey =
         (context.credential?.type === "api_key" ? context.credential.key : undefined) ||
         process.env.HALF_CABBAGE_API_KEY ||
@@ -255,8 +402,9 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
         return initialModels;
       }
 
-      log("refreshing models via API...");
-      const refreshed = await loadModels(endpoint, activeKey, context.signal, true);
+      const force = context.force === true;
+      log(`refreshing models via API${force ? " (forced)" : ""}...`);
+      const refreshed = await loadModels(endpoint, activeKey, { signal: context.signal, force });
       if (refreshed.length > 0) {
         initialModels = refreshed;
         return refreshed;

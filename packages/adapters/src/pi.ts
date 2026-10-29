@@ -144,7 +144,11 @@ export async function runPiSubprocess(
         typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (
+          isTransientErrorMessage(errText) ||
+          (usage.totalTokens > 0 &&
+            /invalid 'authorization' header or token/i.test(errText))
+        ) {
           transientError = errText;
         }
       }
@@ -378,10 +382,19 @@ export async function runPiWithRetry(
       return { result: lastResult, attempts: attempt, durationsMs };
     }
 
+    const isMissingRequiredTool = Boolean(
+      options.requiredTool &&
+        lastResult.exitCode === 0 &&
+        !lastResult.aborted &&
+        !lastResult.errorMessage,
+    );
+    // Missing requiredTool retry is capped at 1 retry (attempt <= 1) to avoid 4x LLM costs
     const isRetryable =
       !options.signal?.aborted &&
       !hasToolOutput &&
-      (lastResult.timedOut || Boolean(lastResult.transientError));
+      (lastResult.timedOut ||
+        Boolean(lastResult.transientError) ||
+        (isMissingRequiredTool && attempt <= 1));
 
     if (!isRetryable || attempt > maxRetries) {
       return { result: lastResult, attempts: attempt, durationsMs };

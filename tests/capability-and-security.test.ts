@@ -153,7 +153,7 @@ describe("CapabilityPolicy, SandboxSpec & Security (P0 / P1)", () => {
     expect(sanitized).toContain("***");
   });
 
-  it("setupPiConfig sets defaultProjectTrust to never and removes stale web-search.ts", () => {
+  it("setupPiConfig sets defaultProjectTrust to never and removes stale web-search.ts and submit-review.ts", () => {
     const fakeAgentDir = join(workDir, "pi-agent");
     const extDir = join(fakeAgentDir, "extensions");
     mkdirSync(extDir, { recursive: true });
@@ -164,6 +164,7 @@ describe("CapabilityPolicy, SandboxSpec & Security (P0 / P1)", () => {
     );
     writeFileSync(join(fakeAgentDir, "AGENTS.md"), "stale agents", "utf8");
     writeFileSync(join(extDir, "web-search.ts"), "// stale extension", "utf8");
+    writeFileSync(join(extDir, "submit-review.ts"), "// stale submit-review", "utf8");
 
     const res = setupPiConfig({
       actionPath: process.cwd(),
@@ -175,6 +176,7 @@ describe("CapabilityPolicy, SandboxSpec & Security (P0 / P1)", () => {
     expect(merged.defaultProjectTrust).toBe("never");
     expect(existsSync(join(fakeAgentDir, "AGENTS.md"))).toBe(false);
     expect(existsSync(join(extDir, "web-search.ts"))).toBe(false);
+    expect(existsSync(join(extDir, "submit-review.ts"))).toBe(false);
     expect(res.installedExtensions).toContain("ci-logger.ts");
     expect(res.installedExtensions).toContain("halfcabbage.ts");
     expect(res.installedExtensions).not.toContain("submit-review.ts");

@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ExitCode,
@@ -13,6 +13,7 @@ import {
   collectSensitiveValues,
   decideGate,
   hasModelCredentials,
+  isPathEscaping,
   mergeChunkReports,
   parseFailOn,
   planChunks,
@@ -20,10 +21,13 @@ import {
 } from "@agentic-action/core";
 import {
   collectDiffInventory,
+  collectSnapshotInventory,
   createLogger,
   materializeReviewContext,
   renderReviewComment,
   resolveBaseSha,
+  sanitizeCommentMarker,
+  sanitizeReportTitle,
   scrubGitCredentials,
   upsertMarkerComment,
   writeGitHubOutput,
@@ -37,7 +41,21 @@ import { executeReviewChunks } from "./review-pr-runner.ts";
 export { buildReviewPrompt } from "./review-pr-linkage.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = resolve(__dirname, "../../..");
+function resolveDefaultActionRoot(): string {
+  const distParent = resolve(__dirname, "..");
+  if (existsSync(join(distParent, "packages/extensions/src"))) {
+    return distParent;
+  }
+  return resolve(__dirname, "../../..");
+}
+const REPO_ROOT = resolveDefaultActionRoot();
+const ALLOWED_SECURITY_AUDIT_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "submit_review",
+]);
 
 function readPrMetadataFromEvent(eventPath?: string): {
   prNumber?: string;
@@ -94,11 +112,39 @@ export async function runPrReview(
   const concurrency = Math.max(1, Math.min(8, Number(env.INPUT_CONCURRENCY || "2") || 2));
   const allowPartial = (env.INPUT_ALLOW_PARTIAL || "false").trim() === "true";
   const postComment = (env.INPUT_POST_COMMENT || "true").trim() === "true";
-  const marker = (env.INPUT_COMMENT_MARKER || "pi-review").trim();
+  const marker = sanitizeCommentMarker(env.INPUT_COMMENT_MARKER || "pi-review");
+  const reportTitle = sanitizeReportTitle(
+    env.INPUT_REPORT_TITLE || "Pi Agent 代码审查",
+  );
+  const auditModeRaw = (env.INPUT_AUDIT_MODE || "diff").trim().toLowerCase();
+  const targetPath = (env.INPUT_TARGET_PATH || ".").trim() || ".";
   const extraExclude = (env.INPUT_EXCLUDE || "")
     .split(/[,\n]/)
     .map((s) => s.trim())
     .filter(Boolean);
+  const extraInclude = (env.INPUT_INCLUDE || "")
+    .split(/[,\n]/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const resolvedTargetAbs = resolve(cwd, targetPath);
+  const relTarget = relative(cwd, resolvedTargetAbs).split("\\").join("/");
+  const diffIncludes: string[] = [];
+  if (relTarget && relTarget !== ".") {
+    if (extraInclude.length === 0) {
+      diffIncludes.push(relTarget, `${relTarget}/**`);
+    } else {
+      for (const pattern of extraInclude) {
+        const clean = pattern.replace(/^\/+/, "");
+        if (clean.startsWith(`${relTarget}/`)) {
+          diffIncludes.push(clean);
+        } else {
+          diffIncludes.push(`${relTarget}/${clean}`);
+        }
+      }
+    }
+  } else {
+    diffIncludes.push(...extraInclude);
+  }
 
   const linkIssues = (env.INPUT_LINK_ISSUES ?? "true").trim() !== "false";
   const includeIssueBody = (env.INPUT_INCLUDE_ISSUE_BODY ?? "false").trim() === "true";
@@ -125,12 +171,15 @@ export async function runPrReview(
   const logger = createLogger("pr-review", secretValues);
 
   const tempBase = env.RUNNER_TEMP || tmpdir();
+  const defaultContextName =
+    auditModeRaw === "codebase"
+      ? "pi-security-audit-context"
+      : "pi-review-context";
   const contextDir = env.INPUT_CONTEXT_DIR
     ? resolve(cwd, env.INPUT_CONTEXT_DIR)
-    : join(tempBase, "pi-review-context");
-  mkdirSync(contextDir, { recursive: true });
+    : join(tempBase, defaultContextName);
 
-  const failInfra = (reason: string): ExitCode => {
+  const failInfra = (reason: string, persistToContext = true): ExitCode => {
     logger.error(reason);
     const envelope: RunResult = {
       schemaVersion: 2,
@@ -140,10 +189,12 @@ export async function runPrReview(
       timings: { totalMs: Date.now() - startMs },
       error: reason,
     };
-    writeRunResult(contextDir, envelope, secretValues);
+    if (persistToContext) {
+      writeRunResult(contextDir, envelope, secretValues);
+    }
     writeGitHubOutput(
       {
-        context_dir: contextDir,
+        context_dir: persistToContext ? contextDir : "",
         report_file: "",
         comment_file: "",
         result: "",
@@ -158,6 +209,29 @@ export async function runPrReview(
     return ExitCode.Infrastructure;
   };
 
+  const relToTemp = relative(tempBase, contextDir).split("\\").join("/");
+  const relToCwd = relative(cwd, contextDir).split("\\").join("/");
+  const isInsideTemp =
+    !isPathEscaping(relToTemp) && relToTemp !== "" && relToTemp !== ".";
+  const isSubdirOfCwd =
+    !isPathEscaping(relToCwd) &&
+    relToCwd !== "" &&
+    relToCwd !== "." &&
+    !relToCwd.startsWith("../");
+  const contextBaseName = basename(contextDir);
+  const isDedicatedContextDir =
+    contextBaseName.startsWith(".pi-") ||
+    contextBaseName.startsWith("pi-") ||
+    contextBaseName.endsWith("-context");
+
+  if (!isInsideTemp && (!isSubdirOfCwd || !isDedicatedContextDir)) {
+    return failInfra(
+      `context_dir 必须位于系统临时目录 (${tempBase}) 或工作区专有前缀子目录下 (.pi- / pi-): ${contextDir}`,
+      false,
+    );
+  }
+  mkdirSync(contextDir, { recursive: true });
+
   let failOn;
   try {
     failOn = parseFailOn(env.INPUT_FAIL_ON || "high");
@@ -165,38 +239,117 @@ export async function runPrReview(
     return failInfra(err instanceof Error ? err.message : String(err));
   }
 
+  if (
+    auditModeRaw !== "diff" &&
+    auditModeRaw !== "codebase" &&
+    auditModeRaw !== "auto"
+  ) {
+    return failInfra(
+      `非法 audit_mode: ${env.INPUT_AUDIT_MODE}（仅支持 auto、codebase、diff）`,
+    );
+  }
+
+  const isSecurityAudit =
+    env.INPUT_SECURITY_AUDIT === "true" ||
+    auditModeRaw === "codebase" ||
+    (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") ||
+    (env.INPUT_REPORT_TITLE || "").includes("安全审计") ||
+    (env.INPUT_COMMENT_MARKER || "").includes("security-audit");
+
+  if (isSecurityAudit) {
+    const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls")
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    for (const tool of rawTools) {
+      if (!ALLOWED_SECURITY_AUDIT_TOOLS.has(tool)) {
+        return failInfra(
+          `安全审计模式仅允许只读工具（read, grep, find, ls），不支持非白名单工具: ${tool}`,
+        );
+      }
+    }
+  }
+
+  if (isPathEscaping(relTarget)) {
+    return failInfra(`target_path 超出工作区边界: ${targetPath}`);
+  }
+
   scrubGitCredentials(cwd);
 
-  let baseSha: string;
-  const resolveStart = Date.now();
-  try {
-    baseSha = resolveBaseSha({
-      baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
-      prNumber,
-      cwd,
-      env,
-      githubToken,
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
-  }
-  const resolveBaseMs = Date.now() - resolveStart;
+  const hasDiffAnchor = Boolean(
+    (env.INPUT_BASE_SHA || eventPr.baseSha || prNumber || "").trim(),
+  );
+  const useSnapshotMode =
+    auditModeRaw === "codebase" || (auditModeRaw === "auto" && !hasDiffAnchor);
 
-  const diffStart = Date.now();
+  let baseSha = "SNAPSHOT";
+  let resolveBaseMs = 0;
   let inventory;
-  try {
-    inventory = collectDiffInventory({
-      cwd,
-      outDir: contextDir,
-      base: baseSha,
-      maxFileBytes,
-      maxFiles,
-      maxSnapshotBytes,
-      excludes: extraExclude,
-      baseSnapshot: true,
-    });
-  } catch (err) {
-    return failInfra(err instanceof Error ? err.message : String(err));
+  const diffStart = Date.now();
+
+  if (useSnapshotMode) {
+    try {
+      inventory = collectSnapshotInventory({
+        cwd,
+        outDir: contextDir,
+        targetPath,
+        maxFileBytes,
+        maxFiles,
+        maxSnapshotBytes,
+        excludes: extraExclude,
+        includes: extraInclude,
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+  } else {
+    const resolveStart = Date.now();
+    try {
+      baseSha = resolveBaseSha({
+        baseSha: env.INPUT_BASE_SHA || eventPr.baseSha,
+        prNumber,
+        cwd,
+        env,
+        githubToken,
+      });
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
+    resolveBaseMs = Date.now() - resolveStart;
+
+    try {
+      inventory = collectDiffInventory({
+        cwd,
+        outDir: contextDir,
+        base: baseSha,
+        maxFileBytes,
+        maxFiles,
+        maxSnapshotBytes,
+        excludes: extraExclude,
+        includes: diffIncludes,
+        baseSnapshot: true,
+      });
+      if (
+        auditModeRaw === "auto" &&
+        targetPath !== "." &&
+        targetPath !== "./" &&
+        inventory.files.length === 0 &&
+        existsSync(resolve(cwd, targetPath))
+      ) {
+        inventory = collectSnapshotInventory({
+          cwd,
+          outDir: contextDir,
+          targetPath,
+          maxFileBytes,
+          maxFiles,
+          maxSnapshotBytes,
+          excludes: extraExclude,
+          includes: extraInclude,
+        });
+      }
+    } catch (err) {
+      return failInfra(err instanceof Error ? err.message : String(err));
+    }
   }
   const diffMs = Date.now() - diffStart;
 
@@ -305,6 +458,7 @@ export async function runPrReview(
           rawResultFile,
           chunkPlan,
           reviewPlan,
+          inventory,
           configuredThinking,
           concurrency,
           githubToken,
@@ -337,7 +491,7 @@ export async function runPrReview(
     commentMarkdown = redactText(
       [
         `<!-- ${marker}:begin -->`,
-        "## Pi Agent 代码审查",
+        `## ${reportTitle}`,
         "",
         "本次运行未能产出结构化审查结果（Agent 未按契约返回有效报告）。",
         "请查看本次运行的日志与上传的 artifact。",
@@ -357,7 +511,11 @@ export async function runPrReview(
       redactText(`${JSON.stringify(finalReport, null, 2)}\n`, secretValues),
       "utf8",
     );
-    commentMarkdown = renderReviewComment(finalReport, { marker, secretValues });
+    commentMarkdown = renderReviewComment(finalReport, {
+      marker,
+      title: reportTitle,
+      secretValues,
+    });
     writeFileSync(commentFile, `${commentMarkdown}\n`, "utf8");
   }
 
@@ -366,7 +524,7 @@ export async function runPrReview(
     "text",
     env.GITHUB_STEP_SUMMARY,
     secretValues,
-    "## Pi Agent 代码审查",
+    `## ${reportTitle}`,
   );
 
   let publishMs: number | undefined;

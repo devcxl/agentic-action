@@ -54,15 +54,18 @@ export function validateSubmitReviewInput(raw: unknown): SubmitReviewInput {
     throw new Error("submit_review schema 校验失败: summary 不能为空");
   }
 
+  const rawVerdict =
+    typeof obj.verdict === "string" ? obj.verdict.trim().toLowerCase() : "";
   if (
-    obj.verdict !== "approve" &&
-    obj.verdict !== "comment" &&
-    obj.verdict !== "request_changes"
+    rawVerdict !== "approve" &&
+    rawVerdict !== "comment" &&
+    rawVerdict !== "request_changes"
   ) {
     throw new Error(
       `submit_review schema 校验失败: verdict 必须为 approve|comment|request_changes，实际为 ${String(obj.verdict)}`,
     );
   }
+  const verdict: SubmitReviewInput["verdict"] = rawVerdict;
 
   if (!Array.isArray(obj.findings)) {
     throw new Error("submit_review schema 校验失败: findings 必须是数组");
@@ -83,7 +86,7 @@ export function validateSubmitReviewInput(raw: unknown): SubmitReviewInput {
 
   return {
     summary,
-    verdict: obj.verdict,
+    verdict,
     findings,
     ...(filesReviewed !== undefined ? { files_reviewed: filesReviewed } : {}),
     ...(typeof obj.notes === "string" ? { notes: obj.notes } : {}),

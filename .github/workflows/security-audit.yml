@@ -1,0 +1,111 @@
+name: Third-Party Security Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_repo:
+        description: 'Optional external GitHub repository to audit (e.g. owner/repo). Leave empty to audit current repository.'
+        required: false
+        default: ''
+      target_ref:
+        description: 'Optional branch/tag/SHA of target_repo'
+        required: false
+        default: ''
+      base_sha:
+        description: 'Optional base commit SHA when audit_mode is diff'
+        required: false
+        default: ''
+      target_path:
+        description: 'Relative directory or file path to audit within the target repository'
+        required: false
+        default: '.'
+      audit_mode:
+        description: 'Audit mode (codebase / diff / auto)'
+        required: false
+        default: 'codebase'
+        type: choice
+        options:
+          - codebase
+          - diff
+          - auto
+      fail_on:
+        description: 'Fail threshold (critical / high / medium / low / none)'
+        required: false
+        default: 'high'
+        type: choice
+        options:
+          - critical
+          - high
+          - medium
+          - low
+          - none
+      max_chunks:
+        description: 'Max chunks to audit (0 = unlimited)'
+        required: false
+        default: '0'
+
+concurrency:
+  group: security-audit-${{ github.workflow }}-${{ github.ref }}-${{ inputs.target_repo || 'self' }}-${{ inputs.target_path || 'root' }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  security-audit:
+    name: Audit Third-Party Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout agentic-action
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout external third-party repository (if specified)
+        if: ${{ inputs.target_repo != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target_repo }}
+          ref: ${{ inputs.target_ref }}
+          path: third-party-target
+          persist-credentials: false
+
+      - name: Resolve effective target_path
+        id: target
+        shell: bash
+        env:
+          TARGET_REPO: ${{ inputs.target_repo }}
+          TARGET_PATH: ${{ inputs.target_path || '.' }}
+        run: |
+          if [ -n "$TARGET_REPO" ]; then
+            if [ "$TARGET_PATH" = "." ] || [ -z "$TARGET_PATH" ]; then
+              EFFECTIVE="third-party-target"
+            else
+              EFFECTIVE="third-party-target/${TARGET_PATH#./}"
+            fi
+          else
+            EFFECTIVE="${TARGET_PATH}"
+          fi
+          {
+            echo "effective_path<<__PI_EOF__"
+            printf '%s\n' "$EFFECTIVE"
+            echo "__PI_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Pi Third-Party Security Audit
+        uses: ./security-audit
+        env:
+          HALF_CABBAGE_BASE_URL: ${{ secrets.HALF_CABBAGE_BASE_URL }}
+          HALF_CABBAGE_API_KEY: ${{ secrets.HALF_CABBAGE_API_KEY }}
+        with:
+          provider: half-cabbage
+          model: deepseek-v4.1-flash
+          thinking: low
+          audit_mode: ${{ inputs.audit_mode || 'codebase' }}
+          base_sha: ${{ inputs.base_sha }}
+          target_path: ${{ steps.target.outputs.effective_path }}
+          max_chunks: ${{ inputs.max_chunks || '0' }}
+          fail_on: ${{ inputs.fail_on || 'high' }}
+          exclude: '**/dist/**,**/node_modules/**'

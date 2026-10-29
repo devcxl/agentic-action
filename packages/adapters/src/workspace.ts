@@ -16,7 +16,11 @@ import type {
 import { redactText } from "@agentic-action/core";
 import type { GitHubIssueData } from "./github.ts";
 
-export { renderReviewComment } from "./comment-renderer.ts";
+export {
+  renderReviewComment,
+  sanitizeCommentMarker,
+  sanitizeReportTitle,
+} from "./comment-renderer.ts";
 
 export function resolveTextOrFile(value?: string, cwd = process.cwd()): string {
   if (!value) return "";
@@ -149,6 +153,49 @@ export function materializeReviewContext(options: {
   const contextDocPath = join(outDir, "REVIEW_CONTEXT.md");
   writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), "utf8");
   writeFileSync(contextDocPath, renderContextDoc(manifest, outDir), "utf8");
+
+  const chunksDir = join(outDir, "chunks");
+  mkdirSync(chunksDir, { recursive: true });
+  const fileByPath = new Map(plan.filesIncluded.map((f) => [f.path, f]));
+  for (const chunk of plan.chunks) {
+    const chunkBundlePath = join(
+      chunksDir,
+      `chunk-${String(chunk.index).padStart(3, "0")}.patch`,
+    );
+    const sections: string[] = [
+      `# Chunk #${chunk.index}/${plan.plannedChunks} Combined Patches (${chunk.files.length} files)`,
+      "",
+    ];
+    for (const filePath of chunk.files) {
+      const meta = fileByPath.get(filePath);
+      if (!meta || !meta.patch) {
+        sections.push(
+          `===== FILE: ${filePath} (NO PATCH IN INVENTORY; inspect directly in workspace) =====`,
+          "",
+        );
+        continue;
+      }
+      const fullPatchPath = join(outDir, meta.patch);
+      if (meta.oversized) {
+        sections.push(
+          `===== FILE: ${meta.path} (OVERSIZED ${meta.bytes} bytes; read ${fullPatchPath} with offset/limit) =====`,
+          "",
+        );
+      } else if (existsSync(fullPatchPath)) {
+        sections.push(
+          `===== FILE: ${meta.path} (status=${meta.status}, +${meta.added}/-${meta.deleted}) =====`,
+          readFileSync(fullPatchPath, "utf8").trimEnd(),
+          "",
+        );
+      } else {
+        sections.push(
+          `===== FILE: ${meta.path} (MISSING PATCH FILE: ${meta.patch}) =====`,
+          "",
+        );
+      }
+    }
+    writeFileSync(chunkBundlePath, `${sections.join("\n")}\n`, "utf8");
+  }
 
   return { manifestPath, contextDocPath, linkedIssueFiles };
 }

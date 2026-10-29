@@ -1,5 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import type {
   BaseSnapshotInfo,
@@ -309,7 +315,8 @@ export function collectDiffInventory(
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
 
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(patchDir, { recursive: true, force: true });
+  rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
 
   let index = 0;
@@ -408,3 +415,6 @@ export function collectDiffInventory(
     },
   };
 }
+
+export * from "./snapshot.ts";
+
