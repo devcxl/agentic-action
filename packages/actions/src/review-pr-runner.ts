@@ -56,6 +56,85 @@ export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
   return merged;
 }
 
+function tryReadPromptFile(path?: string): string | undefined {
+  if (!path) return undefined;
+  try {
+    if (existsSync(path) && statSync(path).isFile()) {
+      return readFileSync(path, "utf8");
+    }
+  } catch {
+    // ignore
+  }
+  return undefined;
+}
+
+export function resolveReviewContract(params: {
+  actionRoot: string;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  inventory?: DiffInventory;
+  chunkPlan: ChunkPlan;
+  logger: Logger;
+}): string {
+  const { actionRoot, cwd, env, inventory, chunkPlan, logger } = params;
+  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
+  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
+  const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
+  const relToActionRoot = relative(actionRoot, resolvedPromptPath);
+
+  if (explicitPromptRel && (!relToActionRoot || isPathEscaping(relToActionRoot))) {
+    throw new Error(`指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`);
+  }
+
+  const isSnapshotMode = inventory?.baseSha === "SNAPSHOT";
+  const isSecurityAudit =
+    env.INPUT_SECURITY_AUDIT === "true" ||
+    defaultPromptRel.includes("security-audit");
+  const defaultContract = isSecurityAudit
+    ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT
+    : BUILTIN_REVIEW_SYSTEM_PROMPT;
+
+  const isLocalCheckout = resolve(actionRoot) === resolve(cwd);
+  const trustedActionPath =
+    process.env.ACTION_PATH && resolve(process.env.ACTION_PATH) !== resolve(cwd)
+      ? resolve(process.env.ACTION_PATH, defaultPromptRel)
+      : undefined;
+
+  const isPromptTamperedInPr =
+    !isSnapshotMode &&
+    (!inventory ||
+      [
+        ...inventory.files.map((f) => f.path),
+        ...inventory.skipped.excluded.map((s) => s.path),
+        ...inventory.skipped.binary.map((s) => s.path),
+        ...inventory.skipped.empty.map((s) => s.path),
+        ...chunkPlan.filesIncluded.map((f) => f.path),
+      ].some(
+        (p) =>
+          p === defaultPromptRel ||
+          p.startsWith(".github/prompts/") ||
+          p === ".github/prompts/pr-review.md" ||
+          p === ".github/prompts/security-audit.md",
+      ));
+
+  if (isPromptTamperedInPr) {
+    logger.warn(
+      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel}) 或无法验证完整性，已强制切换为内置契约`,
+    );
+    return defaultContract;
+  }
+
+  const trustedText = tryReadPromptFile(trustedActionPath);
+  if (trustedText) return trustedText;
+
+  const actionRootText = tryReadPromptFile(resolvedPromptPath);
+  if (actionRootText && (!isLocalCheckout || explicitPromptRel)) {
+    return actionRootText;
+  }
+
+  return defaultContract;
+}
+
 export async function executeReviewChunks(params: {
   cwd: string;
   actionRoot: string;
@@ -96,76 +175,15 @@ export async function executeReviewChunks(params: {
     sleepImpl,
   } = params;
 
-  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
-  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
-  const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
-  const relToActionRoot = relative(actionRoot, resolvedPromptPath);
-  const isPromptInsideActionRoot =
-    Boolean(relToActionRoot) &&
-    !isPathEscaping(relToActionRoot) &&
-    resolve(actionRoot, relToActionRoot) === resolvedPromptPath;
-  const isPromptValidFile =
-    isPromptInsideActionRoot &&
-    existsSync(resolvedPromptPath) &&
-    statSync(resolvedPromptPath).isFile();
+  const baseReviewContract = resolveReviewContract({
+    actionRoot,
+    cwd,
+    env,
+    inventory: params.inventory,
+    chunkPlan,
+    logger,
+  });
 
-  const isSnapshotMode = params.inventory?.baseSha === "SNAPSHOT";
-  const isSecurityAudit =
-    env.INPUT_SECURITY_AUDIT === "true" ||
-    defaultPromptRel.includes("security-audit");
-  const defaultContract = isSecurityAudit
-    ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT
-    : BUILTIN_REVIEW_SYSTEM_PROMPT;
-
-  const isLocalCheckout = resolve(actionRoot) === resolve(cwd);
-  // 1. Prefer external trusted ACTION_PATH (external action installation directory) if available
-  const trustedActionPrompt =
-    process.env.ACTION_PATH && resolve(process.env.ACTION_PATH) !== resolve(cwd)
-      ? resolve(process.env.ACTION_PATH, defaultPromptRel)
-      : undefined;
-  const isTrustedPromptFile =
-    trustedActionPrompt &&
-    existsSync(trustedActionPrompt) &&
-    statSync(trustedActionPrompt).isFile();
-
-  // Tamper detection: in PR diff mode, missing inventory must fail-closed to prevent bypass
-  const isPromptTamperedInPr =
-    !isSnapshotMode &&
-    (!params.inventory ||
-      [
-        ...params.inventory.files.map((f) => f.path),
-        ...params.inventory.skipped.excluded.map((s) => s.path),
-        ...params.inventory.skipped.binary.map((s) => s.path),
-        ...params.inventory.skipped.empty.map((s) => s.path),
-        ...chunkPlan.filesIncluded.map((f) => f.path),
-      ].some((p) => p.startsWith(".github/prompts/")));
-
-  let baseReviewContract = defaultContract;
-  if (!isPromptInsideActionRoot && explicitPromptRel) {
-    throw new Error(
-      `指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`,
-    );
-  }
-
-  if (isPromptTamperedInPr) {
-    logger.warn(
-      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel}) 或无法验证提示词完整性，本次审查强制使用受信任的内置契约`,
-    );
-    baseReviewContract = defaultContract;
-  } else if (isTrustedPromptFile) {
-    baseReviewContract = readFileSync(trustedActionPrompt, "utf8");
-  } else if (isPromptValidFile && !isLocalCheckout) {
-    baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
-  } else if (isPromptValidFile && isLocalCheckout && !explicitPromptRel) {
-    // In local checkout mode with default prompt, use trusted builtin contract
-    baseReviewContract = defaultContract;
-  } else if (isPromptValidFile && isLocalCheckout && explicitPromptRel) {
-    baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
-  } else if (explicitPromptRel) {
-    logger.warn(
-      `提示词文件不存在 (${explicitPromptRel})，已安全降级为内置代码审查契约`,
-    );
-  }
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt
     ? `${baseReviewContract}\n\n${userAppendPrompt}`

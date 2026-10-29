@@ -7733,23 +7733,30 @@ var DEFAULT_EXCLUDES = [
   "**/*.snap",
   // Credential and secret files
   "**/.env",
-  "**/.env.local",
-  "**/.env.*.local",
-  "**/.env.production",
-  "**/.env.development",
-  "**/.npmrc",
-  "**/.netrc",
-  "**/.pypirc",
+  "**/.env.*",
+  "**/*credential*",
+  "**/*secret*",
+  "**/*.tfstate*",
+  "**/service-account*.json",
   "**/*.pem",
   "**/*.key",
+  "**/*.crt",
   "**/*.pkcs12",
   "**/*.p12",
   "**/*.pfx",
   "**/*.kdbx",
+  "**/*_rsa*",
+  "**/*_ed25519*",
+  "**/*_ecdsa*",
+  "**/*_dsa*",
   "**/id_rsa*",
   "**/id_ed25519*",
   "**/id_ecdsa*",
-  "**/id_dsa*"
+  "**/id_dsa*",
+  "**/.npmrc",
+  "**/.netrc",
+  "**/.pypirc",
+  "**/.git-credentials"
 ];
 function parseNumstatZ(text) {
   const tokens = text.split(NUL);
@@ -8978,9 +8985,12 @@ function resolveSnapshotTarget(cwd, rawTarget = ".") {
   return { repoCwd, realRepoCwd, targetAbs };
 }
 function isCandidatePathExcluded(path, targetRelPath, includeRes, excludeRes, extraExcludeRes) {
+  const isTemplateOrExample = /(?:\.example|\.sample|\.template)$/i.test(path);
   const matches = (patterns) => matchesAny(path, patterns) || targetRelPath !== path && matchesAny(targetRelPath, patterns);
   if (includeRes.length > 0 && !matches(includeRes)) return "not-in-include-list";
-  if (matches(excludeRes) || matches(extraExcludeRes)) return "matches-exclude";
+  if (!isTemplateOrExample && (matches(excludeRes) || matches(extraExcludeRes))) {
+    return "matches-exclude";
+  }
   return null;
 }
 function processSnapshotFile(absPath, path, maxFileBytes, totalSnapshotBytes, maxSnapshotBytes, skipped) {
@@ -10513,6 +10523,53 @@ function mergeAgentUsages(usages) {
   }
   return merged;
 }
+function tryReadPromptFile(path) {
+  if (!path) return void 0;
+  try {
+    if (existsSync4(path) && statSync2(path).isFile()) {
+      return readFileSync4(path, "utf8");
+    }
+  } catch {
+  }
+  return void 0;
+}
+function resolveReviewContract(params) {
+  const { actionRoot, cwd, env, inventory, chunkPlan, logger } = params;
+  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
+  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
+  const resolvedPromptPath = resolve4(actionRoot, defaultPromptRel);
+  const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
+  if (explicitPromptRel && (!relToActionRoot || isPathEscaping(relToActionRoot))) {
+    throw new Error(`\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`);
+  }
+  const isSnapshotMode = inventory?.baseSha === "SNAPSHOT";
+  const isSecurityAudit = env.INPUT_SECURITY_AUDIT === "true" || defaultPromptRel.includes("security-audit");
+  const defaultContract = isSecurityAudit ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT : BUILTIN_REVIEW_SYSTEM_PROMPT;
+  const isLocalCheckout = resolve4(actionRoot) === resolve4(cwd);
+  const trustedActionPath = process.env.ACTION_PATH && resolve4(process.env.ACTION_PATH) !== resolve4(cwd) ? resolve4(process.env.ACTION_PATH, defaultPromptRel) : void 0;
+  const isPromptTamperedInPr = !isSnapshotMode && (!inventory || [
+    ...inventory.files.map((f) => f.path),
+    ...inventory.skipped.excluded.map((s) => s.path),
+    ...inventory.skipped.binary.map((s) => s.path),
+    ...inventory.skipped.empty.map((s) => s.path),
+    ...chunkPlan.filesIncluded.map((f) => f.path)
+  ].some(
+    (p) => p === defaultPromptRel || p.startsWith(".github/prompts/") || p === ".github/prompts/pr-review.md" || p === ".github/prompts/security-audit.md"
+  ));
+  if (isPromptTamperedInPr) {
+    logger.warn(
+      `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel}) \u6216\u65E0\u6CD5\u9A8C\u8BC1\u5B8C\u6574\u6027\uFF0C\u5DF2\u5F3A\u5236\u5207\u6362\u4E3A\u5185\u7F6E\u5951\u7EA6`
+    );
+    return defaultContract;
+  }
+  const trustedText = tryReadPromptFile(trustedActionPath);
+  if (trustedText) return trustedText;
+  const actionRootText = tryReadPromptFile(resolvedPromptPath);
+  if (actionRootText && (!isLocalCheckout || explicitPromptRel)) {
+    return actionRootText;
+  }
+  return defaultContract;
+}
 async function executeReviewChunks(params) {
   const {
     cwd,
@@ -10531,49 +10588,14 @@ async function executeReviewChunks(params) {
     logger,
     sleepImpl
   } = params;
-  const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
-  const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
-  const resolvedPromptPath = resolve4(actionRoot, defaultPromptRel);
-  const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
-  const isPromptInsideActionRoot = Boolean(relToActionRoot) && !isPathEscaping(relToActionRoot) && resolve4(actionRoot, relToActionRoot) === resolvedPromptPath;
-  const isPromptValidFile = isPromptInsideActionRoot && existsSync4(resolvedPromptPath) && statSync2(resolvedPromptPath).isFile();
-  const isSnapshotMode = params.inventory?.baseSha === "SNAPSHOT";
-  const isSecurityAudit = env.INPUT_SECURITY_AUDIT === "true" || defaultPromptRel.includes("security-audit");
-  const defaultContract = isSecurityAudit ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT : BUILTIN_REVIEW_SYSTEM_PROMPT;
-  const isLocalCheckout = resolve4(actionRoot) === resolve4(cwd);
-  const trustedActionPrompt = process.env.ACTION_PATH && resolve4(process.env.ACTION_PATH) !== resolve4(cwd) ? resolve4(process.env.ACTION_PATH, defaultPromptRel) : void 0;
-  const isTrustedPromptFile = trustedActionPrompt && existsSync4(trustedActionPrompt) && statSync2(trustedActionPrompt).isFile();
-  const isPromptTamperedInPr = !isSnapshotMode && (!params.inventory || [
-    ...params.inventory.files.map((f) => f.path),
-    ...params.inventory.skipped.excluded.map((s) => s.path),
-    ...params.inventory.skipped.binary.map((s) => s.path),
-    ...params.inventory.skipped.empty.map((s) => s.path),
-    ...chunkPlan.filesIncluded.map((f) => f.path)
-  ].some((p) => p.startsWith(".github/prompts/")));
-  let baseReviewContract = defaultContract;
-  if (!isPromptInsideActionRoot && explicitPromptRel) {
-    throw new Error(
-      `\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`
-    );
-  }
-  if (isPromptTamperedInPr) {
-    logger.warn(
-      `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel}) \u6216\u65E0\u6CD5\u9A8C\u8BC1\u63D0\u793A\u8BCD\u5B8C\u6574\u6027\uFF0C\u672C\u6B21\u5BA1\u67E5\u5F3A\u5236\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u5185\u7F6E\u5951\u7EA6`
-    );
-    baseReviewContract = defaultContract;
-  } else if (isTrustedPromptFile) {
-    baseReviewContract = readFileSync4(trustedActionPrompt, "utf8");
-  } else if (isPromptValidFile && !isLocalCheckout) {
-    baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
-  } else if (isPromptValidFile && isLocalCheckout && !explicitPromptRel) {
-    baseReviewContract = defaultContract;
-  } else if (isPromptValidFile && isLocalCheckout && explicitPromptRel) {
-    baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
-  } else if (explicitPromptRel) {
-    logger.warn(
-      `\u63D0\u793A\u8BCD\u6587\u4EF6\u4E0D\u5B58\u5728 (${explicitPromptRel})\uFF0C\u5DF2\u5B89\u5168\u964D\u7EA7\u4E3A\u5185\u7F6E\u4EE3\u7801\u5BA1\u67E5\u5951\u7EA6`
-    );
-  }
+  const baseReviewContract = resolveReviewContract({
+    actionRoot,
+    cwd,
+    env,
+    inventory: params.inventory,
+    chunkPlan,
+    logger
+  });
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt ? `${baseReviewContract}
 

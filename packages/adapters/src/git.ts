@@ -535,12 +535,15 @@ function isCandidatePathExcluded(
   excludeRes: readonly RegExp[],
   extraExcludeRes: readonly RegExp[],
 ): string | null {
+  const isTemplateOrExample = /(?:\.example|\.sample|\.template)$/i.test(path);
   const matches = (patterns: readonly RegExp[]): boolean =>
     matchesAny(path, patterns) ||
     (targetRelPath !== path && matchesAny(targetRelPath, patterns));
 
   if (includeRes.length > 0 && !matches(includeRes)) return "not-in-include-list";
-  if (matches(excludeRes) || matches(extraExcludeRes)) return "matches-exclude";
+  if (!isTemplateOrExample && (matches(excludeRes) || matches(extraExcludeRes))) {
+    return "matches-exclude";
+  }
   return null;
 }
 
