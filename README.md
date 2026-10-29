@@ -8,8 +8,7 @@
 
 > **版本与迁移说明**：
 > - `@v1` / `@v1.0.0` / `@main` 均指向当前架构（见 [architecture-v2.md](docs/architecture-v2.md) 与 [triage-design.md](docs/triage-design.md)）：默认开启 `--no-approve` 与 `--no-mcp`（不信任被审工作区 `.pi` 配置），退出码为正交枚举（`0` Ok、`10` GateFailed、`20` InvalidReport、`30` Infrastructure）。
-> - `v1` 为移动的主版本别名，`v1.0.0` 为不可变的发布版本；生产环境建议固定到 `@v1.0.0`，避免后续发布改变行为。
-> - 早期以 `v1` / `v2` 双线路发布的 tag 已废弃并删除，旧 `v1` 契约不再提供。
+> - 早期 `v1` / `v2` 双线路 tag 已删除，现统一以 `v1.0.0` 发布。
 
 ---
 
