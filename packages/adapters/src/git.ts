@@ -20,15 +20,16 @@ import {
   parseNameStatusZ,
   parseNumstatZ,
 } from "@agentic-action/core";
+import { applyOversizedPatchHint, buildPatchFileName } from "./patch-file.ts";
 
-export interface GitExecOptions {
+interface GitExecOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   allowFail?: boolean;
   timeoutMs?: number;
 }
 
-export function execGit(
+function execGit(
   args: readonly string[],
   options: GitExecOptions = {},
 ): string {
@@ -174,7 +175,7 @@ export function resolveBaseSha(options: {
   return resolved;
 }
 
-export interface CollectDiffOptions {
+interface CollectDiffOptions {
   cwd?: string;
   outDir: string;
   base: string;
@@ -322,10 +323,7 @@ export function collectDiffInventory(
   let index = 0;
   for (const file of files) {
     index += 1;
-    const safeName = file.path
-      .replace(/[^A-Za-z0-9._-]+/g, "__")
-      .slice(-120);
-    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const fileName = buildPatchFileName(index, file.path);
     const target = join(patchDir, fileName);
 
     const patchPaths = file.oldPath ? [file.oldPath, file.path] : [file.path];
@@ -350,12 +348,7 @@ export function collectDiffInventory(
     file.patch = `patches/${fileName}`;
     file.bytes = bytes;
     file.patchLines = patch === "" ? 0 : patch.split("\n").length - 1;
-    if (bytes > maxFileBytes) {
-      file.oversized = true;
-      file.pages = Math.ceil(bytes / maxFileBytes);
-      file.note = `patch ${bytes} 字节，超过单次读取预算 ${maxFileBytes}，请用 read 的 offset/limit 分页读取（约 ${file.pages} 页）`;
-      file.readVia = `read ${file.patch} （分 ${file.pages} 页，用 offset/limit 逐页读）`;
-    }
+    applyOversizedPatchHint(file, bytes, maxFileBytes);
   }
 
   let baseSnapshot: BaseSnapshotInfo | null = null;

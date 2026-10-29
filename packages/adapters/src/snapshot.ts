@@ -20,6 +20,7 @@ import {
   isPathEscaping,
   matchesAny,
 } from "@agentic-action/core";
+import { applyOversizedPatchHint, buildPatchFileName } from "./patch-file.ts";
 
 export interface CollectSnapshotOptions {
   cwd?: string;
@@ -300,10 +301,7 @@ function writeSnapshotPatches(
     }
 
     index += 1;
-    const safeName = file.path
-      .replace(/[^A-Za-z0-9._-]+/g, "__")
-      .slice(-120);
-    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const fileName = buildPatchFileName(index, file.path);
     const target = join(patchDir, fileName);
 
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
@@ -318,12 +316,7 @@ function writeSnapshotPatches(
     file.patch = `patches/${fileName}`;
     file.bytes = bytes;
     file.patchLines = patch.split("\n").length - 1;
-    if (bytes > maxFileBytes) {
-      file.oversized = true;
-      file.pages = Math.ceil(bytes / maxFileBytes);
-      file.note = `patch ${bytes} 字节，超过单次读取预算 ${maxFileBytes}，请用 read 的 offset/limit 分页读取（约 ${file.pages} 页）`;
-      file.readVia = `read ${file.patch} （分 ${file.pages} 页，用 offset/limit 逐页读）`;
-    }
+    applyOversizedPatchHint(file, bytes, maxFileBytes);
     writtenFiles.push(file);
   }
   return writtenFiles;
