@@ -179,7 +179,7 @@ export async function runPrReview(
     ? resolve(cwd, env.INPUT_CONTEXT_DIR)
     : join(tempBase, defaultContextName);
 
-  const failInfra = (reason: string): ExitCode => {
+  const failInfra = (reason: string, persistToContext = true): ExitCode => {
     logger.error(reason);
     const envelope: RunResult = {
       schemaVersion: 2,
@@ -189,10 +189,12 @@ export async function runPrReview(
       timings: { totalMs: Date.now() - startMs },
       error: reason,
     };
-    writeRunResult(contextDir, envelope, secretValues);
+    if (persistToContext) {
+      writeRunResult(contextDir, envelope, secretValues);
+    }
     writeGitHubOutput(
       {
-        context_dir: contextDir,
+        context_dir: persistToContext ? contextDir : "",
         report_file: "",
         comment_file: "",
         result: "",
@@ -220,6 +222,7 @@ export async function runPrReview(
   if (!isInsideTemp && !isSubdirOfCwd) {
     return failInfra(
       `context_dir 必须位于系统临时目录 (${tempBase}) 或工作区子目录下: ${contextDir}`,
+      false,
     );
   }
   mkdirSync(contextDir, { recursive: true });

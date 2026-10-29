@@ -117,26 +117,28 @@ export async function executeReviewChunks(params: {
     ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT
     : BUILTIN_REVIEW_SYSTEM_PROMPT;
 
-  // 1. Prefer trusted ACTION_PATH (external action installation directory) if available
-  const trustedActionPrompt = process.env.ACTION_PATH
-    ? resolve(process.env.ACTION_PATH, defaultPromptRel)
-    : undefined;
+  const isLocalCheckout = resolve(actionRoot) === resolve(cwd);
+  // 1. Prefer external trusted ACTION_PATH (external action installation directory) if available
+  const trustedActionPrompt =
+    process.env.ACTION_PATH && resolve(process.env.ACTION_PATH) !== resolve(cwd)
+      ? resolve(process.env.ACTION_PATH, defaultPromptRel)
+      : undefined;
   const isTrustedPromptFile =
     trustedActionPrompt &&
     existsSync(trustedActionPrompt) &&
     statSync(trustedActionPrompt).isFile();
 
-  // Tamper detection is only valid in PR diff mode where untrusted PR diff could tamper prompts
+  // Tamper detection: in PR diff mode, missing inventory must fail-closed to prevent bypass
   const isPromptTamperedInPr =
     !isSnapshotMode &&
-    Boolean(params.inventory) &&
-    [
-      ...(params.inventory?.files.map((f) => f.path) ?? []),
-      ...(params.inventory?.skipped.excluded.map((s) => s.path) ?? []),
-      ...(params.inventory?.skipped.binary.map((s) => s.path) ?? []),
-      ...(params.inventory?.skipped.empty.map((s) => s.path) ?? []),
-      ...chunkPlan.filesIncluded.map((f) => f.path),
-    ].some((p) => p.startsWith(".github/prompts/"));
+    (!params.inventory ||
+      [
+        ...params.inventory.files.map((f) => f.path),
+        ...params.inventory.skipped.excluded.map((s) => s.path),
+        ...params.inventory.skipped.binary.map((s) => s.path),
+        ...params.inventory.skipped.empty.map((s) => s.path),
+        ...chunkPlan.filesIncluded.map((f) => f.path),
+      ].some((p) => p.startsWith(".github/prompts/")));
 
   let baseReviewContract = defaultContract;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
@@ -147,12 +149,17 @@ export async function executeReviewChunks(params: {
 
   if (isPromptTamperedInPr) {
     logger.warn(
-      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel})，为防止门禁绕过，本次审查强制使用受信任的内置契约`,
+      `检测到当前 PR 修改了审查提示词文件 (${defaultPromptRel}) 或无法验证提示词完整性，本次审查强制使用受信任的内置契约`,
     );
     baseReviewContract = defaultContract;
   } else if (isTrustedPromptFile) {
     baseReviewContract = readFileSync(trustedActionPrompt, "utf8");
-  } else if (isPromptValidFile) {
+  } else if (isPromptValidFile && !isLocalCheckout) {
+    baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
+  } else if (isPromptValidFile && isLocalCheckout && !explicitPromptRel) {
+    // In local checkout mode with default prompt, use trusted builtin contract
+    baseReviewContract = defaultContract;
+  } else if (isPromptValidFile && isLocalCheckout && explicitPromptRel) {
     baseReviewContract = readFileSync(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {
     logger.warn(

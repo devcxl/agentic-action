@@ -26,7 +26,7 @@
 ## 3. 第三方代码重点审计维度
 
 ### A. 供应链投毒、恶意后门与隐蔽外联（Supply-Chain & Backdoors）
-- **生命周期与构建钩子**：`package.json`（`preinstall` / `install` / `postinstall` / `prepare`）、`setup.py`、`build.rs`、`Makefile`、GitHub Actions workflow（如 `pull_request_target` 执行不受信任代码、スクリプト注入 `${{ github.event... }}`）中执行的 shell 命令或网络拉取。
+- **生命周期与构建钩子**：`package.json`（`preinstall` / `install` / `postinstall` / `prepare`）、`setup.py`、`build.rs`、`Makefile`、GitHub Actions workflow（如 `pull_request_target` 执行不受信任代码、脚本注入（script injection）如 `${{ github.event... }}`）中执行的 shell 命令或网络拉取。
 - **凭据窃取与敏感文件读取**：读取 `process.env`、`~/.ssh`、`~/.aws`、`~/.npmrc`、`~/.gitconfig`、`GITHUB_TOKEN`、云厂商元数据端点或系统密钥环。
 - **隐蔽外发与后门通信**：硬编码可疑域名/IP、DNS 隧道、WebSocket/HTTP 暗桩回传机器指纹或环境变量。
 - **混淆与动态载荷**：高熵 Base64/Hex/XOR/Zlib 解码后传入 `eval`、`new Function`、`vm.runInContext`、动态 `import()`/`require()`，或利用双向 Unicode 控制字符（Trojan Source）隐藏逻辑。

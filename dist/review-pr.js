@@ -8960,6 +8960,90 @@ function listFilesRecursively(repoCwd, currentDir, skipped, acc = []) {
   }
   return acc;
 }
+function resolveSnapshotTarget(cwd, rawTarget = ".") {
+  const repoCwd = cwd ? resolve(cwd) : process.cwd();
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  if (isPathEscaping(relative(repoCwd, targetCandidate))) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
+  }
+  if (!existsSync(targetCandidate)) {
+    throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
+  }
+  return { repoCwd, realRepoCwd, targetAbs };
+}
+function isCandidatePathExcluded(path, targetRelPath, includeRes, excludeRes, extraExcludeRes) {
+  const matches = (patterns) => matchesAny(path, patterns) || targetRelPath !== path && matchesAny(targetRelPath, patterns);
+  if (includeRes.length > 0 && !matches(includeRes)) return "not-in-include-list";
+  if (matches(excludeRes) || matches(extraExcludeRes)) return "matches-exclude";
+  return null;
+}
+function processSnapshotFile(absPath, path, maxFileBytes, totalSnapshotBytes, maxSnapshotBytes, skipped) {
+  let stat;
+  try {
+    stat = lstatSync(absPath);
+  } catch (err) {
+    skipped.excluded.push({
+      path,
+      reason: `unreadable-file-stat: ${err instanceof Error ? err.message : String(err)}`
+    });
+    return { size: 0 };
+  }
+  if (stat.size === 0) {
+    skipped.empty.push({ path, reason: "empty-file" });
+    return { size: 0 };
+  }
+  if (stat.size > maxFileBytes * 5) {
+    skipped.excluded.push({
+      path,
+      reason: `over-max-file-bytes(${stat.size} > ${maxFileBytes * 5})`
+    });
+    return { size: 0 };
+  }
+  if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
+    skipped.excluded.push({
+      path,
+      reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`
+    });
+    return { size: 0 };
+  }
+  let buf;
+  try {
+    buf = readFileSync(absPath);
+  } catch (err) {
+    skipped.excluded.push({
+      path,
+      reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`
+    });
+    return { size: 0 };
+  }
+  if (buf.subarray(0, 8192).includes(0)) {
+    skipped.binary.push({ path, reason: "binary" });
+    return { size: 0 };
+  }
+  const text = buf.toString("utf8");
+  const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
+  return {
+    size: buf.length,
+    file: {
+      path,
+      oldPath: null,
+      status: "A",
+      added: lineCount,
+      deleted: 0,
+      lines: lineCount,
+      patch: null,
+      bytes: 0,
+      patchLines: 0,
+      oversized: false
+    }
+  };
+}
 function filterSnapshotCandidates(params) {
   const {
     absFiles,
@@ -8973,80 +9057,33 @@ function filterSnapshotCandidates(params) {
     skipped
   } = params;
   const files = [];
-  let totalSnapshotBytes = 0;
+  let totalBytes = 0;
   for (const absPath of absFiles) {
     const path = relative(realRepoCwd, absPath).split("\\").join("/");
     const targetRelPath = relative(targetAbs, absPath).split("\\").join("/") || path;
-    const matchesPathOrTargetRel = (patterns) => matchesAny(path, patterns) || targetRelPath !== path && matchesAny(targetRelPath, patterns);
-    let excludedBy = null;
-    if (includeRes.length > 0 && !matchesPathOrTargetRel(includeRes)) {
-      excludedBy = "not-in-include-list";
-    } else if (matchesPathOrTargetRel(excludeRes)) {
-      excludedBy = "matches-exclude";
-    } else if (extraExcludeRes.length > 0 && matchesPathOrTargetRel(extraExcludeRes)) {
-      excludedBy = "matches-exclude";
-    }
+    const excludedBy = isCandidatePathExcluded(
+      path,
+      targetRelPath,
+      includeRes,
+      excludeRes,
+      extraExcludeRes
+    );
     if (excludedBy) {
       skipped.excluded.push({ path, reason: excludedBy });
       continue;
     }
-    let stat;
-    try {
-      stat = lstatSync(absPath);
-    } catch (err) {
-      skipped.excluded.push({
-        path,
-        reason: `unreadable-file-stat: ${err instanceof Error ? err.message : String(err)}`
-      });
-      continue;
-    }
-    if (stat.size === 0) {
-      skipped.empty.push({ path, reason: "empty-file" });
-      continue;
-    }
-    if (stat.size > maxFileBytes * 5) {
-      skipped.excluded.push({
-        path,
-        reason: `over-max-file-bytes(${stat.size} > ${maxFileBytes * 5})`
-      });
-      continue;
-    }
-    if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
-      skipped.excluded.push({
-        path,
-        reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`
-      });
-      continue;
-    }
-    let buf;
-    try {
-      buf = readFileSync(absPath);
-    } catch (err) {
-      skipped.excluded.push({
-        path,
-        reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`
-      });
-      continue;
-    }
-    if (buf.subarray(0, 8192).includes(0)) {
-      skipped.binary.push({ path, reason: "binary" });
-      continue;
-    }
-    totalSnapshotBytes += buf.length;
-    const text = buf.toString("utf8");
-    const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
-    files.push({
+    const { file, size } = processSnapshotFile(
+      absPath,
       path,
-      oldPath: null,
-      status: "A",
-      added: lineCount,
-      deleted: 0,
-      lines: lineCount,
-      patch: null,
-      bytes: 0,
-      patchLines: 0,
-      oversized: false
-    });
+      maxFileBytes,
+      totalBytes,
+      maxSnapshotBytes,
+      skipped
+    );
+    if (file) {
+      totalBytes += size;
+      files.push(file);
+    }
   }
   return files;
 }
@@ -9090,24 +9127,13 @@ function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes, skippe
   return writtenFiles;
 }
 function collectSnapshotInventory(options) {
-  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const { repoCwd, realRepoCwd, targetAbs } = resolveSnapshotTarget(
+    options.cwd,
+    rawTarget
+  );
   const outDir = resolve(repoCwd, options.outDir);
   const patchDir = join(outDir, "patches");
-  const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetCandidate = resolve(repoCwd, rawTarget);
-  const relEarly = relative(repoCwd, targetCandidate);
-  if (isPathEscaping(relEarly)) {
-    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
-  }
-  if (!existsSync(targetCandidate)) {
-    throw new Error(`target_path \u4E0D\u5B58\u5728: ${rawTarget}`);
-  }
-  const realRepoCwd = realpathSync(repoCwd);
-  const targetAbs = realpathSync(targetCandidate);
-  const relCheck = relative(realRepoCwd, targetAbs);
-  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path \u8D85\u51FA\u5DE5\u4F5C\u533A\u8FB9\u754C: ${rawTarget}`);
-  }
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
   const maxFiles = options.maxFiles ?? 0;
   const maxSnapshotBytes = options.maxSnapshotBytes ?? 50 * 1024 * 1024;
@@ -10514,15 +10540,16 @@ async function executeReviewChunks(params) {
   const isSnapshotMode = params.inventory?.baseSha === "SNAPSHOT";
   const isSecurityAudit = env.INPUT_SECURITY_AUDIT === "true" || defaultPromptRel.includes("security-audit");
   const defaultContract = isSecurityAudit ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT : BUILTIN_REVIEW_SYSTEM_PROMPT;
-  const trustedActionPrompt = process.env.ACTION_PATH ? resolve4(process.env.ACTION_PATH, defaultPromptRel) : void 0;
+  const isLocalCheckout = resolve4(actionRoot) === resolve4(cwd);
+  const trustedActionPrompt = process.env.ACTION_PATH && resolve4(process.env.ACTION_PATH) !== resolve4(cwd) ? resolve4(process.env.ACTION_PATH, defaultPromptRel) : void 0;
   const isTrustedPromptFile = trustedActionPrompt && existsSync4(trustedActionPrompt) && statSync2(trustedActionPrompt).isFile();
-  const isPromptTamperedInPr = !isSnapshotMode && Boolean(params.inventory) && [
-    ...params.inventory?.files.map((f) => f.path) ?? [],
-    ...params.inventory?.skipped.excluded.map((s) => s.path) ?? [],
-    ...params.inventory?.skipped.binary.map((s) => s.path) ?? [],
-    ...params.inventory?.skipped.empty.map((s) => s.path) ?? [],
+  const isPromptTamperedInPr = !isSnapshotMode && (!params.inventory || [
+    ...params.inventory.files.map((f) => f.path),
+    ...params.inventory.skipped.excluded.map((s) => s.path),
+    ...params.inventory.skipped.binary.map((s) => s.path),
+    ...params.inventory.skipped.empty.map((s) => s.path),
     ...chunkPlan.filesIncluded.map((f) => f.path)
-  ].some((p) => p.startsWith(".github/prompts/"));
+  ].some((p) => p.startsWith(".github/prompts/")));
   let baseReviewContract = defaultContract;
   if (!isPromptInsideActionRoot && explicitPromptRel) {
     throw new Error(
@@ -10531,12 +10558,16 @@ async function executeReviewChunks(params) {
   }
   if (isPromptTamperedInPr) {
     logger.warn(
-      `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel})\uFF0C\u4E3A\u9632\u6B62\u95E8\u7981\u7ED5\u8FC7\uFF0C\u672C\u6B21\u5BA1\u67E5\u5F3A\u5236\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u5185\u7F6E\u5951\u7EA6`
+      `\u68C0\u6D4B\u5230\u5F53\u524D PR \u4FEE\u6539\u4E86\u5BA1\u67E5\u63D0\u793A\u8BCD\u6587\u4EF6 (${defaultPromptRel}) \u6216\u65E0\u6CD5\u9A8C\u8BC1\u63D0\u793A\u8BCD\u5B8C\u6574\u6027\uFF0C\u672C\u6B21\u5BA1\u67E5\u5F3A\u5236\u4F7F\u7528\u53D7\u4FE1\u4EFB\u7684\u5185\u7F6E\u5951\u7EA6`
     );
     baseReviewContract = defaultContract;
   } else if (isTrustedPromptFile) {
     baseReviewContract = readFileSync4(trustedActionPrompt, "utf8");
-  } else if (isPromptValidFile) {
+  } else if (isPromptValidFile && !isLocalCheckout) {
+    baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
+  } else if (isPromptValidFile && isLocalCheckout && !explicitPromptRel) {
+    baseReviewContract = defaultContract;
+  } else if (isPromptValidFile && isLocalCheckout && explicitPromptRel) {
     baseReviewContract = readFileSync4(resolvedPromptPath, "utf8");
   } else if (explicitPromptRel) {
     logger.warn(
@@ -10759,7 +10790,7 @@ async function runPrReview(env = process.env, options = {}) {
   const tempBase = env.RUNNER_TEMP || tmpdir();
   const defaultContextName = auditModeRaw === "codebase" ? "pi-security-audit-context" : "pi-review-context";
   const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, defaultContextName);
-  const failInfra = (reason) => {
+  const failInfra = (reason, persistToContext = true) => {
     logger.error(reason);
     const envelope2 = {
       schemaVersion: 2,
@@ -10769,10 +10800,12 @@ async function runPrReview(env = process.env, options = {}) {
       timings: { totalMs: Date.now() - startMs },
       error: reason
     };
-    writeRunResult(contextDir, envelope2, secretValues);
+    if (persistToContext) {
+      writeRunResult(contextDir, envelope2, secretValues);
+    }
     writeGitHubOutput(
       {
-        context_dir: contextDir,
+        context_dir: persistToContext ? contextDir : "",
         report_file: "",
         comment_file: "",
         result: "",
@@ -10792,7 +10825,8 @@ async function runPrReview(env = process.env, options = {}) {
   const isSubdirOfCwd = !isPathEscaping(relToCwd) && relToCwd !== "" && relToCwd !== "." && !relToCwd.startsWith("../");
   if (!isInsideTemp && !isSubdirOfCwd) {
     return failInfra(
-      `context_dir \u5FC5\u987B\u4F4D\u4E8E\u7CFB\u7EDF\u4E34\u65F6\u76EE\u5F55 (${tempBase}) \u6216\u5DE5\u4F5C\u533A\u5B50\u76EE\u5F55\u4E0B: ${contextDir}`
+      `context_dir \u5FC5\u987B\u4F4D\u4E8E\u7CFB\u7EDF\u4E34\u65F6\u76EE\u5F55 (${tempBase}) \u6216\u5DE5\u4F5C\u533A\u5B50\u76EE\u5F55\u4E0B: ${contextDir}`,
+      false
     );
   }
   mkdirSync3(contextDir, { recursive: true });

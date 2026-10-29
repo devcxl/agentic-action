@@ -507,6 +507,115 @@ function listFilesRecursively(
   return acc;
 }
 
+function resolveSnapshotTarget(
+  cwd?: string,
+  rawTarget = ".",
+): { repoCwd: string; realRepoCwd: string; targetAbs: string } {
+  const repoCwd = cwd ? resolve(cwd) : process.cwd();
+  const targetCandidate = resolve(repoCwd, rawTarget);
+  if (isPathEscaping(relative(repoCwd, targetCandidate))) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
+  }
+  if (!existsSync(targetCandidate)) {
+    throw new Error(`target_path 不存在: ${rawTarget}`);
+  }
+  const realRepoCwd = realpathSync(repoCwd);
+  const targetAbs = realpathSync(targetCandidate);
+  const relCheck = relative(realRepoCwd, targetAbs);
+  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
+    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
+  }
+  return { repoCwd, realRepoCwd, targetAbs };
+}
+
+function isCandidatePathExcluded(
+  path: string,
+  targetRelPath: string,
+  includeRes: readonly RegExp[],
+  excludeRes: readonly RegExp[],
+  extraExcludeRes: readonly RegExp[],
+): string | null {
+  const matches = (patterns: readonly RegExp[]): boolean =>
+    matchesAny(path, patterns) ||
+    (targetRelPath !== path && matchesAny(targetRelPath, patterns));
+
+  if (includeRes.length > 0 && !matches(includeRes)) return "not-in-include-list";
+  if (matches(excludeRes) || matches(extraExcludeRes)) return "matches-exclude";
+  return null;
+}
+
+function processSnapshotFile(
+  absPath: string,
+  path: string,
+  maxFileBytes: number,
+  totalSnapshotBytes: number,
+  maxSnapshotBytes: number,
+  skipped: SkippedFiles,
+): { file?: DiffFileEntry; size: number } {
+  let stat;
+  try {
+    stat = lstatSync(absPath);
+  } catch (err) {
+    skipped.excluded.push({
+      path,
+      reason: `unreadable-file-stat: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return { size: 0 };
+  }
+
+  if (stat.size === 0) {
+    skipped.empty.push({ path, reason: "empty-file" });
+    return { size: 0 };
+  }
+  if (stat.size > maxFileBytes * 5) {
+    skipped.excluded.push({
+      path,
+      reason: `over-max-file-bytes(${stat.size} > ${maxFileBytes * 5})`,
+    });
+    return { size: 0 };
+  }
+  if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
+    skipped.excluded.push({
+      path,
+      reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`,
+    });
+    return { size: 0 };
+  }
+
+  let buf: Buffer;
+  try {
+    buf = readFileSync(absPath);
+  } catch (err) {
+    skipped.excluded.push({
+      path,
+      reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`,
+    });
+    return { size: 0 };
+  }
+  if (buf.subarray(0, 8192).includes(0)) {
+    skipped.binary.push({ path, reason: "binary" });
+    return { size: 0 };
+  }
+
+  const text = buf.toString("utf8");
+  const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
+  return {
+    size: buf.length,
+    file: {
+      path,
+      oldPath: null,
+      status: "A",
+      added: lineCount,
+      deleted: 0,
+      lines: lineCount,
+      patch: null,
+      bytes: 0,
+      patchLines: 0,
+      oversized: false,
+    },
+  };
+}
+
 function filterSnapshotCandidates(params: {
   absFiles: readonly string[];
   realRepoCwd: string;
@@ -531,91 +640,35 @@ function filterSnapshotCandidates(params: {
   } = params;
 
   const files: DiffFileEntry[] = [];
-  let totalSnapshotBytes = 0;
+  let totalBytes = 0;
 
   for (const absPath of absFiles) {
     const path = relative(realRepoCwd, absPath).split("\\").join("/");
     const targetRelPath = relative(targetAbs, absPath).split("\\").join("/") || path;
-    const matchesPathOrTargetRel = (patterns: readonly RegExp[]): boolean =>
-      matchesAny(path, patterns) ||
-      (targetRelPath !== path && matchesAny(targetRelPath, patterns));
-
-    let excludedBy: string | null = null;
-    if (includeRes.length > 0 && !matchesPathOrTargetRel(includeRes)) {
-      excludedBy = "not-in-include-list";
-    } else if (matchesPathOrTargetRel(excludeRes)) {
-      excludedBy = "matches-exclude";
-    } else if (
-      extraExcludeRes.length > 0 &&
-      matchesPathOrTargetRel(extraExcludeRes)
-    ) {
-      excludedBy = "matches-exclude";
-    }
+    const excludedBy = isCandidatePathExcluded(
+      path,
+      targetRelPath,
+      includeRes,
+      excludeRes,
+      extraExcludeRes,
+    );
     if (excludedBy) {
       skipped.excluded.push({ path, reason: excludedBy });
       continue;
     }
 
-    let stat;
-    try {
-      stat = lstatSync(absPath);
-    } catch (err) {
-      skipped.excluded.push({
-        path,
-        reason: `unreadable-file-stat: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      continue;
-    }
-
-    if (stat.size === 0) {
-      skipped.empty.push({ path, reason: "empty-file" });
-      continue;
-    }
-    if (stat.size > maxFileBytes * 5) {
-      skipped.excluded.push({
-        path,
-        reason: `over-max-file-bytes(${stat.size} > ${maxFileBytes * 5})`,
-      });
-      continue;
-    }
-    if (totalSnapshotBytes + stat.size > maxSnapshotBytes) {
-      skipped.excluded.push({
-        path,
-        reason: `over-max-snapshot-bytes(${maxSnapshotBytes})`,
-      });
-      continue;
-    }
-
-    let buf: Buffer;
-    try {
-      buf = readFileSync(absPath);
-    } catch (err) {
-      skipped.excluded.push({
-        path,
-        reason: `unreadable-file: ${err instanceof Error ? err.message : String(err)}`,
-      });
-      continue;
-    }
-    if (buf.subarray(0, 8192).includes(0)) {
-      skipped.binary.push({ path, reason: "binary" });
-      continue;
-    }
-
-    totalSnapshotBytes += buf.length;
-    const text = buf.toString("utf8");
-    const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
-    files.push({
+    const { file, size } = processSnapshotFile(
+      absPath,
       path,
-      oldPath: null,
-      status: "A",
-      added: lineCount,
-      deleted: 0,
-      lines: lineCount,
-      patch: null,
-      bytes: 0,
-      patchLines: 0,
-      oversized: false,
-    });
+      maxFileBytes,
+      totalBytes,
+      maxSnapshotBytes,
+      skipped,
+    );
+    if (file) {
+      totalBytes += size;
+      files.push(file);
+    }
   }
 
   return files;
@@ -680,24 +733,13 @@ function writeSnapshotPatches(
 export function collectSnapshotInventory(
   options: CollectSnapshotOptions,
 ): DiffInventory {
-  const repoCwd = options.cwd ? resolve(options.cwd) : process.cwd();
+  const rawTarget = (options.targetPath ?? ".").trim() || ".";
+  const { repoCwd, realRepoCwd, targetAbs } = resolveSnapshotTarget(
+    options.cwd,
+    rawTarget,
+  );
   const outDir = resolve(repoCwd, options.outDir);
   const patchDir = join(outDir, "patches");
-  const rawTarget = (options.targetPath ?? ".").trim() || ".";
-  const targetCandidate = resolve(repoCwd, rawTarget);
-  const relEarly = relative(repoCwd, targetCandidate);
-  if (isPathEscaping(relEarly)) {
-    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
-  }
-  if (!existsSync(targetCandidate)) {
-    throw new Error(`target_path 不存在: ${rawTarget}`);
-  }
-  const realRepoCwd = realpathSync(repoCwd);
-  const targetAbs = realpathSync(targetCandidate);
-  const relCheck = relative(realRepoCwd, targetAbs);
-  if (isPathEscaping(relCheck) || resolve(realRepoCwd, relCheck) !== targetAbs) {
-    throw new Error(`target_path 超出工作区边界: ${rawTarget}`);
-  }
 
   const maxFileBytes = options.maxFileBytes ?? 400 * 1024;
   const maxFiles = options.maxFiles ?? 0;
