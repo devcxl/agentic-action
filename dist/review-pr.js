@@ -8596,6 +8596,19 @@ import {
 } from "node:fs";
 import { dirname, join as join2, resolve as resolve2 } from "node:path";
 
+// packages/adapters/src/patch-file.ts
+function buildPatchFileName(index, repoPath) {
+  const safeName = repoPath.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
+  return `${String(index).padStart(3, "0")}-${safeName}.patch`;
+}
+function applyOversizedPatchHint(file, bytes, maxFileBytes) {
+  if (bytes <= maxFileBytes) return;
+  file.oversized = true;
+  file.pages = Math.ceil(bytes / maxFileBytes);
+  file.note = `patch ${bytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6B21\u8BFB\u53D6\u9884\u7B97 ${maxFileBytes}\uFF0C\u8BF7\u7528 read \u7684 offset/limit \u5206\u9875\u8BFB\u53D6\uFF08\u7EA6 ${file.pages} \u9875\uFF09`;
+  file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
+}
+
 // packages/adapters/src/snapshot.ts
 import {
   existsSync,
@@ -8817,8 +8830,7 @@ function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes, skippe
       continue;
     }
     index += 1;
-    const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
-    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const fileName = buildPatchFileName(index, file.path);
     const target = join(patchDir, fileName);
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
     const safeHeaderPath = sanitizePatchHeaderPath(file.path);
@@ -8831,12 +8843,7 @@ function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes, skippe
     file.patch = `patches/${fileName}`;
     file.bytes = bytes;
     file.patchLines = patch.split("\n").length - 1;
-    if (bytes > maxFileBytes) {
-      file.oversized = true;
-      file.pages = Math.ceil(bytes / maxFileBytes);
-      file.note = `patch ${bytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6B21\u8BFB\u53D6\u9884\u7B97 ${maxFileBytes}\uFF0C\u8BF7\u7528 read \u7684 offset/limit \u5206\u9875\u8BFB\u53D6\uFF08\u7EA6 ${file.pages} \u9875\uFF09`;
-      file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
-    }
+    applyOversizedPatchHint(file, bytes, maxFileBytes);
     writtenFiles.push(file);
   }
   return writtenFiles;
@@ -9145,8 +9152,7 @@ function collectDiffInventory(options) {
   let index = 0;
   for (const file of files) {
     index += 1;
-    const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
-    const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
+    const fileName = buildPatchFileName(index, file.path);
     const target = join2(patchDir, fileName);
     const patchPaths = file.oldPath ? [file.oldPath, file.path] : [file.path];
     const patch = execGit(
@@ -9169,12 +9175,7 @@ function collectDiffInventory(options) {
     file.patch = `patches/${fileName}`;
     file.bytes = bytes;
     file.patchLines = patch === "" ? 0 : patch.split("\n").length - 1;
-    if (bytes > maxFileBytes) {
-      file.oversized = true;
-      file.pages = Math.ceil(bytes / maxFileBytes);
-      file.note = `patch ${bytes} \u5B57\u8282\uFF0C\u8D85\u8FC7\u5355\u6B21\u8BFB\u53D6\u9884\u7B97 ${maxFileBytes}\uFF0C\u8BF7\u7528 read \u7684 offset/limit \u5206\u9875\u8BFB\u53D6\uFF08\u7EA6 ${file.pages} \u9875\uFF09`;
-      file.readVia = `read ${file.patch} \uFF08\u5206 ${file.pages} \u9875\uFF0C\u7528 offset/limit \u9010\u9875\u8BFB\uFF09`;
-    }
+    applyOversizedPatchHint(file, bytes, maxFileBytes);
   }
   let baseSnapshot = null;
   if (options.baseSnapshot) {
@@ -10083,7 +10084,6 @@ function materializeReviewContext(options) {
     linesDeleted: plan.filesIncluded.reduce((s, f) => s + f.deleted, 0),
     linesChanged: plan.filesIncluded.reduce((s, f) => s + f.lines, 0),
     oversizedFiles: plan.filesIncluded.filter((f) => f.oversized).length,
-    oversizedNote: "oversized \u4EC5\u8868\u793A\u5355\u4E2A patch \u8D85\u8FC7\u5355\u9875\u8BFB\u53D6\u9884\u7B97\uFF0C\u9700\u5206\u9875\u8BFB\u53D6\uFF1B\u8FD9\u4E9B\u6587\u4EF6\u4ECD\u5DF2\u843D\u76D8",
     chunks: plan.totalChunks,
     plannedChunks: plan.plannedChunks
   };
@@ -10562,7 +10562,7 @@ function tryReadPromptFile(path) {
   return void 0;
 }
 function resolveReviewContract(params) {
-  const { actionRoot, cwd, env, inventory, chunkPlan, logger } = params;
+  const { actionRoot, cwd, env } = params;
   const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
   const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve5(actionRoot, defaultPromptRel);
@@ -10570,23 +10570,15 @@ function resolveReviewContract(params) {
   if (explicitPromptRel && (!relToActionRoot || isPathEscaping(relToActionRoot))) {
     throw new Error(`\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`);
   }
-  const isSnapshotMode = inventory?.baseSha === "SNAPSHOT";
   const isSecurityAudit = env.INPUT_SECURITY_AUDIT === "true" || defaultPromptRel.includes("security-audit");
   const defaultContract = isSecurityAudit ? BUILTIN_SECURITY_AUDIT_SYSTEM_PROMPT : BUILTIN_REVIEW_SYSTEM_PROMPT;
   const isLocalCheckout = resolve5(actionRoot) === resolve5(cwd);
   const trustedActionPath = process.env.ACTION_PATH && resolve5(process.env.ACTION_PATH) !== resolve5(cwd) ? resolve5(process.env.ACTION_PATH, defaultPromptRel) : void 0;
-  if (isLocalCheckout) {
-    const trustedText2 = tryReadPromptFile(trustedActionPath);
-    if (trustedText2) return trustedText2;
-    return defaultContract;
-  }
   const trustedText = tryReadPromptFile(trustedActionPath);
   if (trustedText) return trustedText;
+  if (isLocalCheckout) return defaultContract;
   const actionRootText = tryReadPromptFile(resolvedPromptPath);
-  if (actionRootText && (!isLocalCheckout || explicitPromptRel)) {
-    return actionRootText;
-  }
-  return defaultContract;
+  return actionRootText || defaultContract;
 }
 async function executeReviewChunks(params) {
   const {
@@ -10609,10 +10601,7 @@ async function executeReviewChunks(params) {
   const baseReviewContract = resolveReviewContract({
     actionRoot,
     cwd,
-    env,
-    inventory: params.inventory,
-    chunkPlan,
-    logger
+    env
   });
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
   const combinedAppendPrompt = userAppendPrompt ? `${baseReviewContract}
@@ -11061,7 +11050,6 @@ async function runPrReview(env = process.env, options = {}) {
     rawResultFile,
     chunkPlan,
     reviewPlan,
-    inventory,
     configuredThinking,
     concurrency,
     githubToken,
