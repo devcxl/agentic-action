@@ -1,0 +1,187 @@
+# 发布工作流：推送语义化版本 tag 后自动生成 Draft Release
+#
+# 触发方式：
+#   1. push tag `vX.Y.Z`（含 `vX.Y.Z-rc.1` 之类预发布后缀）。
+#   2. workflow_dispatch：为已存在的 tag 手动补建 Draft Release（推送时工作流尚不存在的历史 tag）。
+#
+# 设计约束：
+#   - 本仓库是 GitHub Action，消费者直接执行仓库内的 `dist/`，因此发布前必须验证
+#     `dist/` 与 `packages/` 源码一致，避免把过期打包产物发出去。
+#   - 只创建 Draft，不自动发布；是否转为正式 Release 由人工确认。
+#   - 移动主版本别名 tag（如 `v2`）不触发本工作流：别名 tag 不符合严格语义化版本，
+#     且会被后续发布覆盖，不适合绑定 Release。
+
+name: Release
+
+on:
+  push:
+    tags:
+      # 用 `v*.*.*` 而非 `v[0-9]+.[0-9]+.[0-9]+*`：后者依赖 `+` 对字符类的量词语义，
+      # 存在歧义风险；一旦理解偏差就会漏发正式版本。宁可 glob 略宽，
+      # 由 "Validate tag and version consistency" 步骤做严格语义化版本校验兜底。
+      # 两段别名 tag（如 `v2`）不会被三段 glob 匹配，因此移动别名 tag 不会产生噪音 run。
+      - 'v*.*.*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要生成 Draft Release 的现有 tag（例如 v2.0.0）'
+        required: true
+
+permissions:
+  contents: write
+
+# 发布不允许被中途取消；同一 tag 的重复触发按顺序排队，避免并发创建同名 Release。
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  draft-release:
+    name: Create Draft Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - name: Checkout tagged commit (full history for changelog)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate tag and version consistency
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${RELEASE_TAG}"
+
+          # 严格校验形状，之后再拼进 gh/git 命令才安全
+          if [[ ! "${TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)*$ ]]; then
+            echo "::error::tag '${TAG}' 不是合法语义化版本（期望 vX.Y.Z 或 vX.Y.Z-rc.1）"
+            exit 1
+          fi
+
+          VERSION="${TAG#v}"
+          PKG_VERSION="$(sed -n 's/^ *"version": *"\([^"]*\)".*/\1/p' package.json | head -n 1)"
+
+          if [[ -z "${PKG_VERSION}" ]]; then
+            echo "::error::无法从 package.json 读取 version"
+            exit 1
+          fi
+          if [[ "${PKG_VERSION}" != "${VERSION}" ]]; then
+            echo "::error::tag 与 package.json 版本不一致: tag=${VERSION} package.json=${PKG_VERSION}"
+            echo "::error::请将 package.json 的 version 更新为 ${VERSION}，或修正 tag 后重新推送"
+            exit 1
+          fi
+
+          PRERELEASE="false"
+          if [[ "${VERSION}" == *-* ]]; then
+            PRERELEASE="true"
+            echo "::notice::检测到预发布版本 ${VERSION}，将以 prerelease 形式创建 Draft"
+          fi
+
+          # 发布偏离主干时给出告警而非阻断：热修分支发布是合法场景，且 Draft 仍需人工确认。
+          # workflow_dispatch 场景下未 fetch origin/main 的 tracking ref，此检查会被跳过。
+          if git rev-parse --verify --quiet origin/main >/dev/null 2>&1; then
+            if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+              echo "::warning::tag 所在提交不在 origin/main 历史中，请确认这是有意从非主干提交发布"
+            fi
+          fi
+
+          {
+            echo "version=${VERSION}"
+            echo "prerelease=${PRERELEASE}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      # 消费者执行的是 dist/，此处必须确认它与源码一致
+      - name: Verify dist bundles match source
+        run: pnpm build:check
+
+      - name: Run test suite
+        run: pnpm test
+
+      - name: Package release assets
+        id: assets
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          ARCHIVE="agentic-action-${VERSION}.tar.gz"
+
+          # git archive 只打包 tag 指向的已跟踪内容，天然排除 node_modules 与本地未提交改动
+          git archive \
+            --format=tar.gz \
+            --prefix="agentic-action-${VERSION}/" \
+            -o "${ARCHIVE}" \
+            "${RELEASE_TAG}"
+
+          # 打包后确认关键产物确实在里面，避免发出空壳或残缺包
+          for required in action.yml dist/review-pr.js dist/run-agent.js dist/triage-issue.js; do
+            if ! tar -tzf "${ARCHIVE}" | grep -qx "agentic-action-${VERSION}/${required}"; then
+              echo "::error::发布包缺少必需文件: ${required}"
+              exit 1
+            fi
+          done
+
+          sha256sum "${ARCHIVE}" > SHA256SUMS
+
+          echo "archive=${ARCHIVE}" >> "${GITHUB_OUTPUT}"
+          echo "打包完成: ${ARCHIVE} ($(du -h "${ARCHIVE}" | cut -f1))"
+
+      - name: Create draft release
+        shell: bash
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          ARCHIVE: ${{ steps.assets.outputs.archive }}
+        run: |
+          set -euo pipefail
+
+          # 重跑幂等：Release 已存在时明确跳过，不覆盖已有内容
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "::notice::Release ${RELEASE_TAG} 已存在，跳过创建（如需重建请先手动删除该 Release）"
+            exit 0
+          fi
+
+          args=(
+            "${RELEASE_TAG}"
+            --draft
+            --title "${RELEASE_TAG}"
+            --generate-notes
+            "${ARCHIVE}#源码与 dist 打包（git archive）"
+            "SHA256SUMS#发布包 SHA256 校验和"
+          )
+          if [[ "${PRERELEASE}" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+
+          gh release create "${args[@]}"
+
+          echo "::notice::已创建 Draft Release ${RELEASE_TAG}，请在 Releases 页面补充说明后手动发布"
+          {
+            echo "### Draft Release ${RELEASE_TAG}"
+            echo ""
+            echo "已创建草稿 Release，尚未公开。确认后请在仓库 Releases 页面点击 Publish。"
+          } >> "${GITHUB_STEP_SUMMARY}"
