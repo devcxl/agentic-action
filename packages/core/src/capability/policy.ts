@@ -394,10 +394,23 @@ export function redactText(
 }
 
 /**
- * Test whether a relative path tries to escape outside its root directory.
+ * Test whether a relative path tries to escape outside its root directory,
+ * or is an absolute/drive-rooted path.
  */
 export function isPathEscaping(rel: string): boolean {
+  if (!rel) return false;
   const norm = rel.split("\\").join("/");
-  return norm === ".." || norm.startsWith("../") || norm.startsWith("/..");
+  if (norm.startsWith("/") || /^[a-zA-Z]:[/\\]/.test(norm)) return true;
+  const segments = norm.split("/").filter(Boolean);
+  let depth = 0;
+  for (const seg of segments) {
+    if (seg === "..") {
+      depth--;
+      if (depth < 0) return true;
+    } else if (seg !== ".") {
+      depth++;
+    }
+  }
+  return depth < 0 || norm.startsWith("..");
 }
 

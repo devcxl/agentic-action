@@ -104,10 +104,10 @@ describe("collectSnapshotInventory", () => {
     ).toThrow(/未找到可审计的源码文件/);
   });
 
-  it("enforces maxSnapshotBytes budget and tags oversized files", () => {
+  it("tags oversized files when single file exceeds maxFileBytes", () => {
     const pkgDir = join(workDir, "oversized-lib");
     mkdirSync(pkgDir, { recursive: true });
-    // Write 5KB file
+    // Write 5KB file (larger than maxFileBytes 2000)
     writeFileSync(join(pkgDir, "large.js"), "a".repeat(5000), "utf8");
 
     const outDir = join(workDir, "audit-context");
@@ -116,11 +116,36 @@ describe("collectSnapshotInventory", () => {
       targetPath: "oversized-lib",
       outDir,
       maxFileBytes: 2000,
-      maxSnapshotBytes: 10000,
+      maxSnapshotBytes: 20000,
     });
 
     expect(inventory.files.length).toBe(1);
     expect(inventory.files[0].oversized).toBe(true);
-    expect(inventory.files[0].pages).toBe(Math.ceil(inventory.files[0].bytes / 2000));
+    expect(inventory.files[0].pages).toBe(3);
+  });
+
+  it("enforces maxSnapshotBytes budget and skips files exceeding the total budget", () => {
+    const pkgDir = join(workDir, "budget-lib");
+    mkdirSync(pkgDir, { recursive: true });
+    // Write three 2KB files
+    writeFileSync(join(pkgDir, "file1.js"), "1".repeat(2000), "utf8");
+    writeFileSync(join(pkgDir, "file2.js"), "2".repeat(2000), "utf8");
+    writeFileSync(join(pkgDir, "file3.js"), "3".repeat(2000), "utf8");
+
+    const outDir = join(workDir, "audit-context");
+    const inventory = collectSnapshotInventory({
+      cwd: workDir,
+      targetPath: "budget-lib",
+      outDir,
+      maxFileBytes: 4000,
+      maxSnapshotBytes: 3500, // file1 (2000) fits; file2 (2000) pushes to 4000 > 3500 so skipped
+    });
+
+    expect(inventory.files.length).toBeGreaterThanOrEqual(1);
+    expect(
+      inventory.skipped.excluded.some((s) =>
+        s.reason.includes("over-max-snapshot-bytes"),
+      ),
+    ).toBe(true);
   });
 });

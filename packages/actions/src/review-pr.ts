@@ -49,6 +49,13 @@ function resolveDefaultActionRoot(): string {
   return resolve(__dirname, "../../..");
 }
 const REPO_ROOT = resolveDefaultActionRoot();
+const ALLOWED_SECURITY_AUDIT_TOOLS = new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "submit_review",
+]);
 
 function readPrMetadataFromEvent(eventPath?: string): {
   prNumber?: string;
@@ -172,9 +179,6 @@ export async function runPrReview(
     ? resolve(cwd, env.INPUT_CONTEXT_DIR)
     : join(tempBase, defaultContextName);
 
-  const relContext = relative(cwd, contextDir);
-  const home = homedir();
-
   const failInfra = (reason: string): ExitCode => {
     logger.error(reason);
     const envelope: RunResult = {
@@ -203,15 +207,19 @@ export async function runPrReview(
     return ExitCode.Infrastructure;
   };
 
-  if (
-    contextDir === cwd ||
-    contextDir === tempBase ||
-    contextDir === home ||
-    contextDir === "/" ||
-    contextDir === resolve(cwd, "..")
-  ) {
+  const relToTemp = relative(tempBase, contextDir).split("\\").join("/");
+  const relToCwd = relative(cwd, contextDir).split("\\").join("/");
+  const isInsideTemp =
+    !isPathEscaping(relToTemp) && relToTemp !== "" && relToTemp !== ".";
+  const isSubdirOfCwd =
+    !isPathEscaping(relToCwd) &&
+    relToCwd !== "" &&
+    relToCwd !== "." &&
+    !relToCwd.startsWith("../");
+
+  if (!isInsideTemp && !isSubdirOfCwd) {
     return failInfra(
-      `context_dir 不能为工作区根目录、系统临时根目录、用户主目录或根目录: ${contextDir}`,
+      `context_dir 必须位于系统临时目录 (${tempBase}) 或工作区子目录下: ${contextDir}`,
     );
   }
   mkdirSync(contextDir, { recursive: true });
@@ -234,6 +242,7 @@ export async function runPrReview(
   }
 
   const isSecurityAudit =
+    env.INPUT_SECURITY_AUDIT === "true" ||
     auditModeRaw === "codebase" ||
     (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") ||
     (env.INPUT_REPORT_TITLE || "").includes("安全审计") ||
@@ -244,13 +253,12 @@ export async function runPrReview(
       .split(",")
       .map((s) => s.trim().toLowerCase())
       .filter(Boolean);
-    const dangerousTools = rawTools.filter(
-      (t) => t === "bash" || t === "write" || t === "edit",
-    );
-    if (dangerousTools.length > 0) {
-      return failInfra(
-        `安全审计模式仅允许只读工具（read, grep, find, ls），禁止启用写或执行工具: ${dangerousTools.join(", ")}`,
-      );
+    for (const tool of rawTools) {
+      if (!ALLOWED_SECURITY_AUDIT_TOOLS.has(tool)) {
+        return failInfra(
+          `安全审计模式仅允许只读工具（read, grep, find, ls），不支持非白名单工具: ${tool}`,
+        );
+      }
     }
   }
 

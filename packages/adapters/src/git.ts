@@ -319,7 +319,8 @@ export function collectDiffInventory(
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
 
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(patchDir, { recursive: true, force: true });
+  rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
 
   let index = 0;
@@ -506,11 +507,6 @@ function listFilesRecursively(
   return acc;
 }
 
-interface SnapshotFilterResult {
-  files: DiffFileEntry[];
-  fileContents: Map<string, string>;
-}
-
 function filterSnapshotCandidates(params: {
   absFiles: readonly string[];
   realRepoCwd: string;
@@ -521,7 +517,7 @@ function filterSnapshotCandidates(params: {
   maxFileBytes: number;
   maxSnapshotBytes: number;
   skipped: SkippedFiles;
-}): SnapshotFilterResult {
+}): DiffFileEntry[] {
   const {
     absFiles,
     realRepoCwd,
@@ -535,7 +531,6 @@ function filterSnapshotCandidates(params: {
   } = params;
 
   const files: DiffFileEntry[] = [];
-  const fileContents = new Map<string, string>();
   let totalSnapshotBytes = 0;
 
   for (const absPath of absFiles) {
@@ -608,7 +603,6 @@ function filterSnapshotCandidates(params: {
 
     totalSnapshotBytes += buf.length;
     const text = buf.toString("utf8");
-    fileContents.set(path, text);
     const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
     files.push({
       path,
@@ -624,12 +618,12 @@ function filterSnapshotCandidates(params: {
     });
   }
 
-  return { files, fileContents };
+  return files;
 }
 
 function writeSnapshotPatches(
   files: DiffFileEntry[],
-  fileContents: Map<string, string>,
+  realRepoCwd: string,
   patchDir: string,
   maxFileBytes: number,
 ): void {
@@ -642,8 +636,12 @@ function writeSnapshotPatches(
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
 
-    const text = fileContents.get(file.path) ?? "";
-    fileContents.delete(file.path);
+    let text = "";
+    try {
+      text = readFileSync(join(realRepoCwd, file.path), "utf8");
+    } catch {
+      text = "";
+    }
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
     const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch =
@@ -707,7 +705,7 @@ export function collectSnapshotInventory(
   const skipped: SkippedFiles = { excluded: [], binary: [], empty: [] };
   const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
 
-  const { files, fileContents } = filterSnapshotCandidates({
+  const files = filterSnapshotCandidates({
     absFiles,
     realRepoCwd,
     targetAbs,
@@ -722,7 +720,6 @@ export function collectSnapshotInventory(
   files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
   if (maxFiles > 0 && files.length > maxFiles) {
     for (const file of files.slice(maxFiles)) {
-      fileContents.delete(file.path);
       skipped.excluded.push({
         path: file.path,
         reason: `over-max-files(${maxFiles})`,
@@ -738,10 +735,11 @@ export function collectSnapshotInventory(
     throw new Error(`target_path (${rawTarget}) 下未找到可审计的源码文件`);
   }
 
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(patchDir, { recursive: true, force: true });
+  rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
 
-  writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes);
+  writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes);
 
   return {
     baseSha: "SNAPSHOT",

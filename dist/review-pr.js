@@ -7367,7 +7367,7 @@ var require_dist = __commonJS({
 
 // packages/actions/src/review-pr.ts
 import { existsSync as existsSync5, mkdirSync as mkdirSync3, readFileSync as readFileSync5, writeFileSync as writeFileSync4 } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { dirname as dirname3, join as join5, relative as relative3, resolve as resolve5 } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7699,8 +7699,20 @@ function redactText(text, secretValues = []) {
   return out;
 }
 function isPathEscaping(rel) {
+  if (!rel) return false;
   const norm = rel.split("\\").join("/");
-  return norm === ".." || norm.startsWith("../") || norm.startsWith("/..");
+  if (norm.startsWith("/") || /^[a-zA-Z]:[/\\]/.test(norm)) return true;
+  const segments = norm.split("/").filter(Boolean);
+  let depth = 0;
+  for (const seg of segments) {
+    if (seg === "..") {
+      depth--;
+      if (depth < 0) return true;
+    } else if (seg !== ".") {
+      depth++;
+    }
+  }
+  return depth < 0 || norm.startsWith("..");
 }
 
 // packages/core/src/review/budget.ts
@@ -8787,7 +8799,8 @@ function collectDiffInventory(options) {
     files.length = maxFiles;
   }
   files.sort((a, b) => a.path.localeCompare(b.path));
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(patchDir, { recursive: true, force: true });
+  rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
   let index = 0;
   for (const file of files) {
@@ -8956,7 +8969,6 @@ function filterSnapshotCandidates(params) {
     skipped
   } = params;
   const files = [];
-  const fileContents = /* @__PURE__ */ new Map();
   let totalSnapshotBytes = 0;
   for (const absPath of absFiles) {
     const path = relative(realRepoCwd, absPath).split("\\").join("/");
@@ -9018,7 +9030,6 @@ function filterSnapshotCandidates(params) {
     }
     totalSnapshotBytes += buf.length;
     const text = buf.toString("utf8");
-    fileContents.set(path, text);
     const lineCount = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n").length;
     files.push({
       path,
@@ -9033,17 +9044,21 @@ function filterSnapshotCandidates(params) {
       oversized: false
     });
   }
-  return { files, fileContents };
+  return files;
 }
-function writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes) {
+function writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes) {
   let index = 0;
   for (const file of files) {
     index += 1;
     const safeName = file.path.replace(/[^A-Za-z0-9._-]+/g, "__").slice(-120);
     const fileName = `${String(index).padStart(3, "0")}-${safeName}.patch`;
     const target = join(patchDir, fileName);
-    const text = fileContents.get(file.path) ?? "";
-    fileContents.delete(file.path);
+    let text = "";
+    try {
+      text = readFileSync(join(realRepoCwd, file.path), "utf8");
+    } catch {
+      text = "";
+    }
     const bodyLines = (text.endsWith("\n") ? text.slice(0, -1) : text).split("\n");
     const safeHeaderPath = sanitizePatchHeaderPath(file.path);
     const patch = `--- /dev/null
@@ -9094,7 +9109,7 @@ function collectSnapshotInventory(options) {
   const includeRes = userIncludes.map(globToRegExp);
   const skipped = { excluded: [], binary: [], empty: [] };
   const absFiles = listFilesRecursively(realRepoCwd, targetAbs, skipped);
-  const { files, fileContents } = filterSnapshotCandidates({
+  const files = filterSnapshotCandidates({
     absFiles,
     realRepoCwd,
     targetAbs,
@@ -9108,7 +9123,6 @@ function collectSnapshotInventory(options) {
   files.sort((a, b) => b.lines - a.lines || a.path.localeCompare(b.path));
   if (maxFiles > 0 && files.length > maxFiles) {
     for (const file of files.slice(maxFiles)) {
-      fileContents.delete(file.path);
       skipped.excluded.push({
         path: file.path,
         reason: `over-max-files(${maxFiles})`,
@@ -9122,9 +9136,10 @@ function collectSnapshotInventory(options) {
   if (files.length === 0) {
     throw new Error(`target_path (${rawTarget}) \u4E0B\u672A\u627E\u5230\u53EF\u5BA1\u8BA1\u7684\u6E90\u7801\u6587\u4EF6`);
   }
-  rmSync(outDir, { recursive: true, force: true });
+  rmSync(patchDir, { recursive: true, force: true });
+  rmSync(join(outDir, "base"), { recursive: true, force: true });
   mkdirSync(patchDir, { recursive: true });
-  writeSnapshotPatches(files, fileContents, patchDir, maxFileBytes);
+  writeSnapshotPatches(files, realRepoCwd, patchDir, maxFileBytes);
   return {
     baseSha: "SNAPSHOT",
     baseInput: rawTarget,
@@ -10623,6 +10638,13 @@ function resolveDefaultActionRoot() {
   return resolve5(__dirname, "../../..");
 }
 var REPO_ROOT = resolveDefaultActionRoot();
+var ALLOWED_SECURITY_AUDIT_TOOLS = /* @__PURE__ */ new Set([
+  "read",
+  "grep",
+  "find",
+  "ls",
+  "submit_review"
+]);
 function readPrMetadataFromEvent(eventPath) {
   if (!eventPath || !existsSync5(eventPath)) return {};
   try {
@@ -10698,8 +10720,6 @@ async function runPrReview(env = process.env, options = {}) {
   const tempBase = env.RUNNER_TEMP || tmpdir();
   const defaultContextName = auditModeRaw === "codebase" ? "pi-security-audit-context" : "pi-review-context";
   const contextDir = env.INPUT_CONTEXT_DIR ? resolve5(cwd, env.INPUT_CONTEXT_DIR) : join5(tempBase, defaultContextName);
-  const relContext = relative3(cwd, contextDir);
-  const home = homedir();
   const failInfra = (reason) => {
     logger.error(reason);
     const envelope2 = {
@@ -10727,9 +10747,13 @@ async function runPrReview(env = process.env, options = {}) {
     );
     return 30 /* Infrastructure */;
   };
-  if (contextDir === cwd || contextDir === tempBase || contextDir === home || contextDir === "/" || contextDir === resolve5(cwd, "..")) {
+  const relToTemp = relative3(tempBase, contextDir).split("\\").join("/");
+  const relToCwd = relative3(cwd, contextDir).split("\\").join("/");
+  const isInsideTemp = !isPathEscaping(relToTemp) && relToTemp !== "" && relToTemp !== ".";
+  const isSubdirOfCwd = !isPathEscaping(relToCwd) && relToCwd !== "" && relToCwd !== "." && !relToCwd.startsWith("../");
+  if (!isInsideTemp && !isSubdirOfCwd) {
     return failInfra(
-      `context_dir \u4E0D\u80FD\u4E3A\u5DE5\u4F5C\u533A\u6839\u76EE\u5F55\u3001\u7CFB\u7EDF\u4E34\u65F6\u6839\u76EE\u5F55\u3001\u7528\u6237\u4E3B\u76EE\u5F55\u6216\u6839\u76EE\u5F55: ${contextDir}`
+      `context_dir \u5FC5\u987B\u4F4D\u4E8E\u7CFB\u7EDF\u4E34\u65F6\u76EE\u5F55 (${tempBase}) \u6216\u5DE5\u4F5C\u533A\u5B50\u76EE\u5F55\u4E0B: ${contextDir}`
     );
   }
   mkdirSync3(contextDir, { recursive: true });
@@ -10744,16 +10768,15 @@ async function runPrReview(env = process.env, options = {}) {
       `\u975E\u6CD5 audit_mode: ${env.INPUT_AUDIT_MODE}\uFF08\u4EC5\u652F\u6301 auto\u3001codebase\u3001diff\uFF09`
     );
   }
-  const isSecurityAudit = auditModeRaw === "codebase" || (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") || (env.INPUT_REPORT_TITLE || "").includes("\u5B89\u5168\u5BA1\u8BA1") || (env.INPUT_COMMENT_MARKER || "").includes("security-audit");
+  const isSecurityAudit = env.INPUT_SECURITY_AUDIT === "true" || auditModeRaw === "codebase" || (env.INPUT_DEFAULT_PROMPT_FILE || "").includes("security-audit") || (env.INPUT_REPORT_TITLE || "").includes("\u5B89\u5168\u5BA1\u8BA1") || (env.INPUT_COMMENT_MARKER || "").includes("security-audit");
   if (isSecurityAudit) {
     const rawTools = (env.INPUT_TOOLS || "read,grep,find,ls").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
-    const dangerousTools = rawTools.filter(
-      (t) => t === "bash" || t === "write" || t === "edit"
-    );
-    if (dangerousTools.length > 0) {
-      return failInfra(
-        `\u5B89\u5168\u5BA1\u8BA1\u6A21\u5F0F\u4EC5\u5141\u8BB8\u53EA\u8BFB\u5DE5\u5177\uFF08read, grep, find, ls\uFF09\uFF0C\u7981\u6B62\u542F\u7528\u5199\u6216\u6267\u884C\u5DE5\u5177: ${dangerousTools.join(", ")}`
-      );
+    for (const tool of rawTools) {
+      if (!ALLOWED_SECURITY_AUDIT_TOOLS.has(tool)) {
+        return failInfra(
+          `\u5B89\u5168\u5BA1\u8BA1\u6A21\u5F0F\u4EC5\u5141\u8BB8\u53EA\u8BFB\u5DE5\u5177\uFF08read, grep, find, ls\uFF09\uFF0C\u4E0D\u652F\u6301\u975E\u767D\u540D\u5355\u5DE5\u5177: ${tool}`
+        );
+      }
     }
   }
   if (isPathEscaping(relTarget)) {

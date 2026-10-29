@@ -116,9 +116,9 @@ inputs:
     required: false
     default: 'high'
   post_comment:
-    description: 'Publish/update PR comment idempotently when pr_number is available (true/false)'
+    description: 'Publish/update PR comment idempotently when pr_number is available (true/false, requires pull-requests: write)'
     required: false
-    default: 'true'
+    default: 'false'
   comment_marker:
     description: 'HTML comment marker name for idempotent security audit PR comments'
     required: false
@@ -212,6 +212,7 @@ runs:
       shell: bash
       env:
         ACTION_ROOT: ${{ github.action_path }}/..
+        INPUT_SECURITY_AUDIT: 'true'
         INPUT_DEFAULT_PROMPT_FILE: .github/prompts/security-audit.md
         INPUT_AUDIT_MODE: ${{ inputs.audit_mode }}
         INPUT_TARGET_PATH: ${{ inputs.target_path }}
