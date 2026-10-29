@@ -1,15 +1,12 @@
 import { execFileSync } from "node:child_process";
 import {
   existsSync,
-  lstatSync,
   mkdirSync,
-  readdirSync,
   readFileSync,
-  realpathSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import type {
   BaseSnapshotInfo,
   DiffFileEntry,
@@ -19,7 +16,6 @@ import type {
 import {
   DEFAULT_EXCLUDES,
   globToRegExp,
-  isPathEscaping,
   matchesAny,
   parseNameStatusZ,
   parseNumstatZ,

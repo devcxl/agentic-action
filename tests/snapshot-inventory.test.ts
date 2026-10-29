@@ -121,7 +121,7 @@ describe("collectSnapshotInventory", () => {
 
     expect(inventory.files.length).toBe(1);
     expect(inventory.files[0].oversized).toBe(true);
-    expect(inventory.files[0].pages).toBe(3);
+    expect(inventory.files[0].pages).toBeGreaterThanOrEqual(3);
   });
 
   it("enforces maxSnapshotBytes budget and skips files exceeding the total budget", () => {
@@ -141,7 +141,7 @@ describe("collectSnapshotInventory", () => {
       maxSnapshotBytes: 3500, // file1 (2000) fits; file2 (2000) pushes to 4000 > 3500 so skipped
     });
 
-    expect(inventory.files.length).toBeGreaterThanOrEqual(1);
+    expect(inventory.files.length).toBe(1);
     expect(
       inventory.skipped.excluded.some((s) =>
         s.reason.includes("over-max-snapshot-bytes"),

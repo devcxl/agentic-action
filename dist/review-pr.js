@@ -7368,7 +7368,7 @@ var require_dist = __commonJS({
 // packages/actions/src/review-pr.ts
 import { existsSync as existsSync6, mkdirSync as mkdirSync4, readFileSync as readFileSync6, writeFileSync as writeFileSync5 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname as dirname3, join as join6, relative as relative4, resolve as resolve6 } from "node:path";
+import { basename, dirname as dirname3, join as join6, relative as relative3, resolve as resolve6 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 // packages/contracts/src/agent-spec.ts
@@ -9576,7 +9576,7 @@ async function runPiSubprocess(sandbox, options = {}) {
       const errText = typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (isTransientErrorMessage(errText) || usage.totalTokens > 0 && /invalid 'authorization' header or token/i.test(errText)) {
           transientError = errText;
         }
       }
@@ -10520,7 +10520,7 @@ async function resolveIssuePrLinkage(params) {
 
 // packages/actions/src/review-pr-runner.ts
 import { existsSync as existsSync5, readFileSync as readFileSync5, statSync as statSync2, writeFileSync as writeFileSync4 } from "node:fs";
-import { join as join5, relative as relative3, resolve as resolve5 } from "node:path";
+import { join as join5, relative as relative2, resolve as resolve5 } from "node:path";
 function resolveSubmitReviewExtensionPath(actionRoot) {
   const candidates = [
     join5(actionRoot, "packages/extensions/src/submit-review.ts"),
@@ -10556,7 +10556,7 @@ function resolveReviewContract(params) {
   const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
   const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve5(actionRoot, defaultPromptRel);
-  const relToActionRoot = relative3(actionRoot, resolvedPromptPath);
+  const relToActionRoot = relative2(actionRoot, resolvedPromptPath);
   if (explicitPromptRel && (!relToActionRoot || isPathEscaping(relToActionRoot))) {
     throw new Error(`\u6307\u5B9A\u7684\u63D0\u793A\u8BCD\u6587\u4EF6\u8D85\u51FA Action \u76EE\u5F55\u8FB9\u754C: ${explicitPromptRel}`);
   }
@@ -10786,7 +10786,7 @@ async function runPrReview(env = process.env, options = {}) {
   const extraExclude = (env.INPUT_EXCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
   const extraInclude = (env.INPUT_INCLUDE || "").split(/[,\n]/).map((s) => s.trim()).filter(Boolean);
   const resolvedTargetAbs = resolve6(cwd, targetPath);
-  const relTarget = relative4(cwd, resolvedTargetAbs).split("\\").join("/");
+  const relTarget = relative3(cwd, resolvedTargetAbs).split("\\").join("/");
   const diffIncludes = [];
   if (relTarget && relTarget !== ".") {
     if (extraInclude.length === 0) {
@@ -10849,8 +10849,8 @@ async function runPrReview(env = process.env, options = {}) {
     );
     return 30 /* Infrastructure */;
   };
-  const relToTemp = relative4(tempBase, contextDir).split("\\").join("/");
-  const relToCwd = relative4(cwd, contextDir).split("\\").join("/");
+  const relToTemp = relative3(tempBase, contextDir).split("\\").join("/");
+  const relToCwd = relative3(cwd, contextDir).split("\\").join("/");
   const isInsideTemp = !isPathEscaping(relToTemp) && relToTemp !== "" && relToTemp !== ".";
   const isSubdirOfCwd = !isPathEscaping(relToCwd) && relToCwd !== "" && relToCwd !== "." && !relToCwd.startsWith("../");
   const contextBaseName = basename(contextDir);

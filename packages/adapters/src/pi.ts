@@ -144,7 +144,11 @@ export async function runPiSubprocess(
         typeof msg.errorMessage === "string" ? msg.errorMessage : "";
       if (errText) {
         errorMessage = errText;
-        if (isTransientErrorMessage(errText)) {
+        if (
+          isTransientErrorMessage(errText) ||
+          (usage.totalTokens > 0 &&
+            /invalid 'authorization' header or token/i.test(errText))
+        ) {
           transientError = errText;
         }
       }
