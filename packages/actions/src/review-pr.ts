@@ -458,7 +458,6 @@ export async function runPrReview(
           rawResultFile,
           chunkPlan,
           reviewPlan,
-          inventory,
           configuredThinking,
           concurrency,
           githubToken,

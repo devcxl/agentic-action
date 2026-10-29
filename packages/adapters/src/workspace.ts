@@ -118,8 +118,6 @@ export function materializeReviewContext(options: {
     linesDeleted: plan.filesIncluded.reduce((s, f) => s + f.deleted, 0),
     linesChanged: plan.filesIncluded.reduce((s, f) => s + f.lines, 0),
     oversizedFiles: plan.filesIncluded.filter((f) => f.oversized).length,
-    oversizedNote:
-      "oversized 仅表示单个 patch 超过单页读取预算，需分页读取；这些文件仍已落盘",
     chunks: plan.totalChunks,
     plannedChunks: plan.plannedChunks,
   };

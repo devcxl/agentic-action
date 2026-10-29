@@ -5,7 +5,6 @@ import type {
   AgentUsage,
   ChunkPlan,
   ChunkReport,
-  DiffInventory,
   ReviewPlan,
   ThinkingLevel,
 } from "@agentic-action/contracts";
@@ -42,7 +41,7 @@ function resolveSubmitReviewExtensionPath(actionRoot: string): string | undefine
   return candidates.find((c) => existsSync(c));
 }
 
-export function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
+function mergeAgentUsages(usages: readonly AgentUsage[]): AgentUsage {
   const merged = createEmptyUsage();
   for (const u of usages) {
     merged.inputTokens += u.inputTokens;
@@ -68,15 +67,12 @@ function tryReadPromptFile(path?: string): string | undefined {
   return undefined;
 }
 
-export function resolveReviewContract(params: {
+function resolveReviewContract(params: {
   actionRoot: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
-  inventory?: DiffInventory;
-  chunkPlan: ChunkPlan;
-  logger: Logger;
 }): string {
-  const { actionRoot, cwd, env, inventory, chunkPlan, logger } = params;
+  const { actionRoot, cwd, env } = params;
   const explicitPromptRel = (env.INPUT_DEFAULT_PROMPT_FILE || "").trim();
   const defaultPromptRel = explicitPromptRel || ".github/prompts/pr-review.md";
   const resolvedPromptPath = resolve(actionRoot, defaultPromptRel);
@@ -86,7 +82,6 @@ export function resolveReviewContract(params: {
     throw new Error(`指定的提示词文件超出 Action 目录边界: ${explicitPromptRel}`);
   }
 
-  const isSnapshotMode = inventory?.baseSha === "SNAPSHOT";
   const isSecurityAudit =
     env.INPUT_SECURITY_AUDIT === "true" ||
     defaultPromptRel.includes("security-audit");
@@ -100,23 +95,18 @@ export function resolveReviewContract(params: {
       ? resolve(process.env.ACTION_PATH, defaultPromptRel)
       : undefined;
 
-  // In local checkout (self-test / local action uses: ./), files in actionRoot belong to the PR under review.
-  // ALWAYS use trusted builtin contract to guarantee zero prompt tampering, unless an external ACTION_PATH is provided.
-  if (isLocalCheckout) {
-    const trustedText = tryReadPromptFile(trustedActionPath);
-    if (trustedText) return trustedText;
-    return defaultContract;
-  }
-
+  // A contract supplied via an external ACTION_PATH always wins: it lives outside the
+  // checked-out workspace, so it cannot be tampered with by the PR under review.
   const trustedText = tryReadPromptFile(trustedActionPath);
   if (trustedText) return trustedText;
 
-  const actionRootText = tryReadPromptFile(resolvedPromptPath);
-  if (actionRootText && (!isLocalCheckout || explicitPromptRel)) {
-    return actionRootText;
-  }
+  // In local checkout (self-test / local action uses: ./), files in actionRoot belong to the PR under review.
+  // ALWAYS use trusted builtin contract to guarantee zero prompt tampering, unless an external ACTION_PATH is provided.
+  if (isLocalCheckout) return defaultContract;
 
-  return defaultContract;
+  // An empty or unreadable prompt file must fall back to the builtin contract.
+  const actionRootText = tryReadPromptFile(resolvedPromptPath);
+  return actionRootText || defaultContract;
 }
 
 export async function executeReviewChunks(params: {
@@ -129,7 +119,6 @@ export async function executeReviewChunks(params: {
   rawResultFile: string;
   chunkPlan: ChunkPlan;
   reviewPlan: ReviewPlan;
-  inventory?: DiffInventory;
   configuredThinking: ThinkingLevel;
   concurrency: number;
   githubToken: string;
@@ -163,9 +152,6 @@ export async function executeReviewChunks(params: {
     actionRoot,
     cwd,
     env,
-    inventory: params.inventory,
-    chunkPlan,
-    logger,
   });
 
   const userAppendPrompt = resolveTextOrFile(env.INPUT_APPEND_SYSTEM_PROMPT, cwd);
