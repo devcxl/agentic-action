@@ -402,7 +402,7 @@ export default async function halfCabbageExtension(pi: ExtensionAPI): Promise<vo
         return initialModels;
       }
 
-      const force = context.force !== false;
+      const force = context.force === true;
       log(`refreshing models via API${force ? " (forced)" : ""}...`);
       const refreshed = await loadModels(endpoint, activeKey, { signal: context.signal, force });
       if (refreshed.length > 0) {

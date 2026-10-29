@@ -10663,11 +10663,13 @@ ${userAppendPrompt}` : baseReviewContract;
       logger.info(
         `Reviewing chunk #${chunk.index}/${chunkPlan.plannedChunks} (${chunk.files.length} files)`
       );
+      const chunkTimeoutMs = Math.max(1e4, Number(env.INPUT_TIMEOUT_MS || "300000") || 3e5);
       const { result: piRes, durationsMs } = await runPiWithRetry(sandbox, {
         piBin,
         cwd,
         mode: "json",
         requiredTool: "submit_review",
+        timeoutMs: chunkTimeoutMs,
         maxRetries: 2,
         baseDelayMs: 1500,
         sleepImpl

@@ -241,11 +241,15 @@ export async function executeReviewChunks(params: {
         `Reviewing chunk #${chunk.index}/${chunkPlan.plannedChunks} (${chunk.files.length} files)`,
       );
 
+      const chunkTimeoutMs =
+        Math.max(10_000, Number(env.INPUT_TIMEOUT_MS || "300000") || 300_000);
+
       const { result: piRes, durationsMs } = await runPiWithRetry(sandbox, {
         piBin,
         cwd,
         mode: "json",
         requiredTool: "submit_review",
+        timeoutMs: chunkTimeoutMs,
         maxRetries: 2,
         baseDelayMs: 1500,
         sleepImpl,
